@@ -1,0 +1,88 @@
+# =============================================================================
+# Algorithm Configuration: IQ-Learn
+# =============================================================================
+# Controls Optuna hyperparameter search for iqlearn/tune.py.
+#
+# The actor architecture and weights are fixed from the best BC configuration
+# (results/<reservoir>/behavioral_cloning/best_config.json) — the actor in
+# IQ-Learn must match BC exactly so that pretrained weights transfer cleanly.
+# Only the critic (twin Q-network) and training schedule are tuned here.
+# =============================================================================
+
+# --------------------------------------------------------------------------
+# Runtime settings
+# Set via CLI on first run — values are written back here for reproducibility.
+#
+# CLI flags:
+#   --device      <value>   compute device
+#   --num_workers <value>   parallel Optuna workers (overrides optuna.n_jobs)
+#
+# device options:
+#   auto          use GPU if available, otherwise CPU (recommended default)
+#   cpu           CPU only — use on login nodes or CPU-only allocations
+#   cuda          default GPU (first available)
+#   cuda:0/1/...  specific GPU by index
+#   mps           Apple Silicon GPU
+#
+# num_workers (HPC / SLURM):
+#   IQ-Learn is batch-based (no rollouts) — CPU parallelism works well.
+#   Set to match --cpus-per-task in your SLURM job script.
+#   Example:  #SBATCH --cpus-per-task=20  →  num_workers: 20
+#   null means fall back to optuna.n_jobs below.
+# --------------------------------------------------------------------------
+runtime:
+  device:      auto
+  num_workers: ~     # null: falls back to optuna.n_jobs
+
+# --------------------------------------------------------------------------
+# Optuna study settings
+# IQ-Learn tuning is batch-based (no environment rollouts), so it is faster
+# than AIRL per trial. 2000 trials explores the space well with ~20 workers.
+# n_jobs: used only when runtime.num_workers is null.
+# --------------------------------------------------------------------------
+optuna:
+  n_trials: 2000
+  n_jobs:   20
+
+# --------------------------------------------------------------------------
+# Hyperparameter search space
+# Each entry maps to one Optuna suggest call in iqlearn/tune.py.
+#
+# Format:
+#   param: [a, b, c]                      → suggest_categorical
+#   param: {low: x, high: y}              → suggest_float (uniform)
+#   param: {low: x, high: y, log: true}   → suggest_float (log-uniform)
+#   param: {low: x, high: y, type: int}   → suggest_int
+# --------------------------------------------------------------------------
+search_space:
+
+  # Critic network — twin Q-network, trained from scratch
+  # (actor architecture is fixed from BC and is NOT tuned here)
+  critic_hidden_dim:      [64, 128, 256, 512]
+  critic_n_hidden_layers: {low: 2, high: 5, type: int}
+
+  # Training schedule
+  # critic_warm_up_epochs: epochs of critic-only training before joint update
+  #                        (actor weights frozen; lets critic stabilize first)
+  # n_epochs:              total joint training epochs
+  critic_warm_up_epochs: [50, 100, 150, 200]
+  n_epochs:              [200, 250, 300, 350, 400, 450, 500]
+
+  # Learning rates
+  # lr_actor:  keep small — actor is initialized from BC, avoid large updates
+  # lr_critic: critic trains from scratch and can tolerate a larger LR
+  lr_actor:  {low: 1.0e-5, high: 1.0e-3, log: true}
+  lr_critic: {low: 1.0e-5, high: 1.0e-3, log: true}
+
+  # IQ-Learn specific parameters
+  # gamma:               discount factor
+  # tau:                 soft target network update rate (Polyak averaging)
+  # alpha_entropy:       entropy regularization coefficient (encourages exploration)
+  # alpha_regularization: chi-squared regularization weight in IQ-Learn loss
+  # lambda_bc:           KL penalty weight anchoring actor to BC prior
+  #                      (0.0 = no BC regularization; 1.0 = strong anchoring)
+  gamma:                [0.90, 0.95, 0.99]
+  tau:                  {low: 0.001, high: 0.01, log: true}
+  alpha_entropy:        {low: 0.01, high: 1.0, log: true}
+  alpha_regularization: {low: 0.01, high: 1.0, log: true}
+  lambda_bc:            {low: 0.0, high: 1.0}

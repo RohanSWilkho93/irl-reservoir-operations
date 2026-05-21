@@ -1,0 +1,53 @@
+# =============================================================================
+# Reservoir Configuration: Conchas
+# =============================================================================
+# Operational Target : Uniform
+# Operating Purposes : Flood Control, Irrigation
+# Record Period      : 18 years
+# =============================================================================
+
+# --------------------------------------------------------------------------
+# CLI-configurable settings
+# Pass these flags on first run — values are written back here for reproducibility.
+#
+# Flags accepted by all four algorithm scripts:
+#   --data_path          /path/to/data.csv
+#   --state_variables    col1 col2 ...
+#   --use_month_encoding true|false
+#   --policy_network     beta|lognormal|hardgating|softgating
+#   --split_train        <int>
+#   --split_val          <int>
+#   --split_test         <int>
+# --------------------------------------------------------------------------
+
+data_path: data\conchas.csv
+
+columns:
+  date: date
+  state:
+  - storage
+  - net_inflow
+  action: release
+  use_month_encoding: false
+
+# Policy network type for this reservoir.
+# Options : beta | lognormal | hardgating | softgating
+# Rule    : zero releases present → hardgating or softgating
+#           releases always > 0   → beta or lognormal
+policy_network: softgating
+
+# Train / validation / test split (in years, chronological order).
+split:
+  train: 14
+  val: 1
+  test: 3
+
+# Normalization bounds — auto-computed from the training split on first run
+# and written back here. Applied unchanged to val and test.
+reservoir:
+  bounds: {}
+deepmaxent:
+  storage_step: [1.0, 2.0, 5.0, 10.0, 15.0]
+  release_step: [5.0, 10.0, 15.0, 20.0, 25.0]
+  inflow_step: [5.0, 10.0, 15.0, 20.0, 25.0]
+  reward_features: []

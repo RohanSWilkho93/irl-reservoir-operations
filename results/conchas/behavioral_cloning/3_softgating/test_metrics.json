@@ -1,0 +1,11 @@
+{
+  "reservoir": "conchas",
+  "policy_type": "softgating",
+  "n_mc": 5,
+  "metrics": {
+    "release_corr_mean": -0.015401,
+    "release_corr_std": 0.027224,
+    "release_nrmse_mean": 0.327229,
+    "release_nrmse_std": 0.002551
+  }
+}

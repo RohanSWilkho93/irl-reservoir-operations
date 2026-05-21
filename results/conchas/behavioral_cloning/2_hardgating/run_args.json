@@ -1,0 +1,22 @@
+{
+  "tune": {
+    "reservoir": "conchas",
+    "run_id": 2,
+    "folder": "2_hardgating",
+    "policy_network": "hardgating",
+    "data_path": "data\\conchas.csv",
+    "date_column": "date",
+    "state_variables": [
+      "storage",
+      "net_inflow"
+    ],
+    "use_month_encoding": true,
+    "split_train": 14,
+    "split_val": 1,
+    "split_test": 3,
+    "device": "cpu",
+    "n_trials": 10,
+    "num_workers": 1,
+    "timestamp": "2026-05-20T15:38:54"
+  }
+}

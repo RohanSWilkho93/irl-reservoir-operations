@@ -1,0 +1,11 @@
+{
+  "reservoir": "cottage_grove",
+  "policy_type": "lognormal",
+  "n_mc": 60,
+  "metrics": {
+    "release_corr_mean": 0.057872,
+    "release_corr_std": 0.028713,
+    "release_nrmse_mean": 1.137232,
+    "release_nrmse_std": 0.043403
+  }
+}

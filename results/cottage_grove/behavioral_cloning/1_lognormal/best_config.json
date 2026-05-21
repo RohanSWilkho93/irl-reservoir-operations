@@ -1,0 +1,29 @@
+{
+  "reservoir": "cottage_grove",
+  "policy_type": "lognormal",
+  "best_score": 0.9303038095425187,
+  "trial_number": 4,
+  "config": {
+    "state_dim": 2,
+    "action_dim": 1,
+    "hidden_dim": 256,
+    "n_hidden_layers": 4,
+    "dropout": 0.2,
+    "lr": 0.003343208191500263,
+    "epochs": 300,
+    "batch_size": 64,
+    "scheduler_type": "plateau",
+    "early_stopping_patience": 50,
+    "seed": 2048,
+    "device": "cpu",
+    "alpha_min": 1.0,
+    "alpha_max": 50.0,
+    "beta_min": 1.0,
+    "beta_max": 50.0,
+    "sigma_min": 0.32146465264678453,
+    "log_epsilon": 3.6287002255540686,
+    "zero_threshold": 0.01,
+    "mse_weight": 10.0,
+    "gate_weight": 5.0
+  }
+}

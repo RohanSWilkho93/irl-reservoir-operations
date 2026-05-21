@@ -1,0 +1,115 @@
+runtime:
+  device: cpu
+  num_workers: 1
+optuna:
+  n_trials: 10
+  n_jobs: 16
+shared:
+  seed:
+  - 42
+  - 123
+  - 456
+  - 789
+  - 1024
+  - 2048
+  - 3407
+  - 9999
+  hidden_dim:
+  - 64
+  - 128
+  - 256
+  - 512
+  n_hidden_layers:
+  - 2
+  - 3
+  - 4
+  - 5
+  dropout:
+  - 0.0
+  - 0.1
+  - 0.2
+  - 0.3
+  lr:
+    low: 0.0001
+    high: 0.005
+    log: true
+  epochs:
+  - 200
+  - 250
+  - 300
+  - 350
+  - 400
+  - 450
+  - 500
+  batch_size:
+  - 64
+  - 128
+  - 256
+  - 512
+  scheduler_type:
+  - cosine
+  - plateau
+  - none
+  early_stopping_patience:
+  - 15
+  - 30
+  - 50
+beta:
+  alpha_max:
+  - 10
+  - 20
+  - 50
+  - 100
+  beta_max:
+  - 10
+  - 20
+  - 50
+  - 100
+lognormal:
+  sigma_min:
+    low: 0.01
+    high: 0.5
+    log: true
+  log_epsilon:
+    low: 0.1
+    high: 10.0
+    log: true
+hardgating:
+  zero_threshold:
+  - 0.005
+  - 0.01
+  - 0.015
+  - 0.02
+  alpha_max:
+  - 10
+  - 20
+  - 50
+  - 100
+  beta_max:
+  - 10
+  - 20
+  - 50
+  - 100
+softgating:
+  zero_threshold:
+  - 0.005
+  - 0.01
+  - 0.02
+  alpha_max:
+  - 10
+  - 20
+  - 50
+  - 100
+  beta_max:
+  - 10
+  - 20
+  - 50
+  - 100
+  mse_weight:
+    low: 5.0
+    high: 15.0
+    log: true
+  gate_weight:
+    low: 1.0
+    high: 10.0
+    log: true

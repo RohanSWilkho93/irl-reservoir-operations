@@ -1,0 +1,29 @@
+{
+  "reservoir": "conchas",
+  "policy_type": "hardgating",
+  "best_score": 0.8703594177994178,
+  "trial_number": 0,
+  "config": {
+    "state_dim": 4,
+    "action_dim": 1,
+    "hidden_dim": 512,
+    "n_hidden_layers": 2,
+    "dropout": 0.1,
+    "lr": 0.00014653521030672147,
+    "epochs": 450,
+    "batch_size": 512,
+    "scheduler_type": "none",
+    "early_stopping_patience": 15,
+    "seed": 123,
+    "device": "cpu",
+    "alpha_min": 1.0,
+    "alpha_max": 20,
+    "beta_min": 1.0,
+    "beta_max": 50,
+    "sigma_min": 0.1,
+    "log_epsilon": 1.0,
+    "zero_threshold": 0.005,
+    "mse_weight": 10.0,
+    "gate_weight": 5.0
+  }
+}

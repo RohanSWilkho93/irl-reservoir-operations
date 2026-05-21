@@ -1,0 +1,90 @@
+# =============================================================================
+# Algorithm Configuration: Deep Maximum Entropy IRL
+# =============================================================================
+# Controls Optuna hyperparameter search for deepmaxent/tune.py.
+# Reservoir-specific step sizes (storage_step, release_step, inflow_step)
+# are set per reservoir in configs/reservoirs/<name>.yaml — not here.
+# =============================================================================
+
+# --------------------------------------------------------------------------
+# Runtime settings
+# Set via CLI on first run — values are written back here for reproducibility.
+# Subsequent runs reuse these values unless overridden again.
+#
+# CLI flags:
+#   --device      <value>   compute device
+#   --num_workers <value>   parallel Optuna workers (overrides optuna.n_jobs)
+#
+# device options:
+#   auto          use GPU if available, otherwise CPU (recommended default)
+#   cpu           CPU only — use on login nodes or CPU-only allocations
+#   cuda          default GPU (first available)
+#   cuda:0/1/...  specific GPU by index (for multi-GPU nodes)
+#   mps           Apple Silicon GPU
+#
+# num_workers (HPC / SLURM):
+#   Set this to match --cpus-per-task in your SLURM job script.
+#   Example:  #SBATCH --cpus-per-task=20  →  num_workers: 20
+#   null means fall back to optuna.n_jobs below.
+# --------------------------------------------------------------------------
+runtime:
+  device:      auto
+  num_workers: ~     # null: falls back to optuna.n_jobs
+
+# --------------------------------------------------------------------------
+# Optuna study settings
+# n_trials: total hyperparameter configurations evaluated.
+# n_jobs:   parallel workers — used only when runtime.num_workers is null.
+#           On HPC, prefer setting runtime.num_workers via CLI instead.
+# --------------------------------------------------------------------------
+optuna:
+  n_trials: 2000
+  n_jobs:   10
+
+# --------------------------------------------------------------------------
+# State space constraint
+# Trials are pruned if (n_storage_bins × n_inflow_bins) exceeds this limit.
+# Increase only if you have enough RAM and compute time.
+# --------------------------------------------------------------------------
+state_space:
+  max_states: 5000
+
+# --------------------------------------------------------------------------
+# Hyperparameter search space
+# Each entry maps to one Optuna suggest call in deepmaxent/tune.py.
+#
+# Format:
+#   param: [a, b, c]            → suggest_categorical
+#   param: {low: x, high: y}    → suggest_float (uniform)
+#   param: {low: x, high: y, log: true}  → suggest_float (log-uniform)
+#   param: {low: x, high: y, step: z}   → suggest_float (stepped)
+# --------------------------------------------------------------------------
+search_space:
+
+  # Random seeds tested during tuning (ensures results are not seed-sensitive)
+  seed: [42, 123, 456, 789, 1024, 2048]
+
+  # MDP parameters
+  # gamma: discount factor for future rewards
+  # tau:   softmax temperature in soft value iteration (lower = sharper policy)
+  gamma: [0.90, 0.95, 0.99]
+  tau:   {low: 0.01, high: 1.0, log: true}
+
+  # Reward network architecture
+  # hidden_dim1/2: neurons per hidden layer (two-layer network)
+  # dropout:       dropout rate applied after each hidden layer
+  hidden_dim1: [64, 128, 256, 512]
+  hidden_dim2: [64, 128, 256, 512]
+  dropout:     {low: 0.0, high: 0.4, step: 0.1}
+
+  # Training
+  # lr:           Adam learning rate
+  # n_iterations: maximum training epochs before forced stop
+  # batch_size:   number of gradient points sampled per update step
+  lr:           {low: 1.0e-5, high: 1.0e-3, log: true}
+  n_iterations: [100, 200, 300, 400, 500]
+  batch_size:   [1000, 2000, 5000]
+
+  # Early stopping
+  # Stops training if the validation S_DeepMaxEnt difference does not improve for this many epochs.
+  early_stop_patience: [50, 75, 100, 150]

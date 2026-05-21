@@ -1,0 +1,22 @@
+{
+  "tune": {
+    "reservoir": "cottage_grove",
+    "run_id": 2,
+    "folder": "2_beta",
+    "policy_network": "beta",
+    "data_path": "data\\cottage_grove.csv",
+    "date_column": "date",
+    "state_variables": [
+      "storage",
+      "net_inflow"
+    ],
+    "use_month_encoding": true,
+    "split_train": 14,
+    "split_val": 1,
+    "split_test": 3,
+    "device": "cpu",
+    "n_trials": 10,
+    "num_workers": 1,
+    "timestamp": "2026-05-20T14:41:40"
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "reservoir": "conchas",
+  "policy_type": "softgating",
+  "best_score": 0.8092823834584513,
+  "trial_number": 9,
+  "config": {
+    "state_dim": 2,
+    "action_dim": 1,
+    "hidden_dim": 256,
+    "n_hidden_layers": 2,
+    "dropout": 0.0,
+    "lr": 0.0009808762676442476,
+    "epochs": 500,
+    "batch_size": 256,
+    "scheduler_type": "plateau",
+    "early_stopping_patience": 30,
+    "seed": 2048,
+    "device": "cpu",
+    "alpha_min": 1.0,
+    "alpha_max": 100,
+    "beta_min": 1.0,
+    "beta_max": 50,
+    "sigma_min": 0.1,
+    "log_epsilon": 1.0,
+    "zero_threshold": 0.02,
+    "mse_weight": 14.195141653003253,
+    "gate_weight": 5.3176470501456095
+  }
+}
