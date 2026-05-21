@@ -1,0 +1,28 @@
+{
+  "reservoir": "conchas",
+  "run_id": 1,
+  "best_trial": 0,
+  "best_val_savf_diff": 586.3797428184895,
+  "best_params": {
+    "storage_step": 5.0,
+    "release_step": 25.0,
+    "inflow_step": 20.0,
+    "seed": 42,
+    "gamma": 0.95,
+    "tau": 0.1584085680149199,
+    "hidden_dim1": 64,
+    "hidden_dim2": 512,
+    "dropout": 0.4,
+    "lr": 1.8057402610869235e-05,
+    "n_iterations": 200,
+    "batch_size": 5000,
+    "early_stop_patience": 150
+  },
+  "use_month_encoding": false,
+  "reward_features": [],
+  "n_trials_complete": 2,
+  "n_trials_pruned": 0,
+  "n_trials_failed": 0,
+  "elapsed_minutes": 2.46,
+  "mdp_combinations_cached": 2
+}

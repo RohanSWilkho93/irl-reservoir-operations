@@ -1,0 +1,22 @@
+{
+  "reservoir": "conchas",
+  "run_id": 1,
+  "best_epoch": 61,
+  "best_val_s_deepmaxent": 0.5246499244014826,
+  "best_val_savf_diff": 587.9297742062305,
+  "val_s_deepmaxent": 0.5249740545817501,
+  "val_release_corr": -0.009302045148455094,
+  "val_storage_corr": 0.877246443918488,
+  "val_release_nrmse": 0.34307357867512517,
+  "val_storage_nrmse": 0.1986158431934805,
+  "val_release_rmse": 2.7881589738927426,
+  "val_storage_rmse": 17.437080721485234,
+  "test_s_deepmaxent": 0.6535893571240589,
+  "test_release_corr": -0.00872257727327283,
+  "test_storage_corr": 0.932671569270535,
+  "test_release_nrmse": 0.33242771129644394,
+  "test_storage_nrmse": 0.1238655303421372,
+  "test_release_rmse": 2.409768479187922,
+  "test_storage_rmse": 12.02969644129802,
+  "elapsed_minutes": 2.36
+}

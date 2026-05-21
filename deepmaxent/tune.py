@@ -5,29 +5,49 @@ Optuna hyperparameter search for Deep Maximum Entropy IRL.
 
 Usage
 -----
-    python deepmaxent/tune.py --reservoir cottage_grove [options]
+# Minimal — reservoir config supplies everything else
+    python deepmaxent/tune.py --reservoir conchas
+
+# Full override on first run (values are written back to configs for
+# reproducibility; subsequent runs need only --reservoir)
+    python deepmaxent/tune.py --reservoir conchas \\
+        --data_path data/conchas.csv \\
+        --date_column date \\
+        --state_variables storage net_inflow \\
+        --use_month_encoding false \\
+        --reward_features \\
+        --split_train 14 --split_val 1 --split_test 3 \\
+        --device cpu --num_workers 4 --n_trials 2000 \\
+        --run_id 1
 
 CLI arguments
 -------------
 Required:
-    --reservoir NAME        Reservoir name, e.g. cottage_grove.
+    --reservoir NAME        Reservoir name, e.g. conchas.
                             Resolved to configs/reservoirs/<name>.yaml.
 
-Optional (all override YAML values at runtime — nothing is written back):
-    --run_id        INT     Run identifier.  Auto-incremented if omitted.
-    --device        STR     Compute device: auto | cpu | cuda | cuda:N | mps.
-                            Overrides deepmaxent.yaml runtime.device.
-    --num_workers   INT     Parallel Optuna workers.
-                            Overrides deepmaxent.yaml runtime.num_workers.
-    --use_month_encoding BOOL
-                            Include month in MDP and reward features.
-                            Overrides reservoir YAML columns.use_month_encoding.
-    --reward_features COL [COL ...]
-                            Extra CSV columns conditioning the reward network
-                            (conditional IRL).  Overrides reservoir YAML
-                            deepmaxent.reward_features.
+Optional — reservoir config overrides (written back to YAML on first use):
     --data_path     PATH    Path to reservoir CSV.
-                            Overrides reservoir YAML data_path.
+    --date_column   STR     Name of the date column in the CSV.
+    --state_variables COL [COL ...]
+                            State variable column names (space-separated).
+                            Must be exactly two: storage and inflow column.
+    --use_month_encoding true|false
+                            Include month in MDP and reward network features.
+    --reward_features [COL ...]
+                            Extra CSV columns conditioning the reward network
+                            (conditional IRL).  Pass no values to set empty.
+    --split_train   INT     Training years.
+    --split_val     INT     Validation years.
+    --split_test    INT     Test years.
+
+Optional — algorithm config overrides (written back to deepmaxent.yaml):
+    --device        STR     Compute device: auto | cpu | cuda | cuda:N | mps.
+    --num_workers   INT     Parallel Optuna workers.
+    --n_trials      INT     Total Optuna trials.
+
+Optional — run control:
+    --run_id        INT     Run identifier.  Auto-incremented if omitted.
 
 What this script does
 ---------------------
@@ -107,51 +127,207 @@ def _parse_args() -> argparse.Namespace:
         description="Deep MaxEnt IRL — Optuna hyperparameter search",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
+
+    # ---- Required ----
     p.add_argument(
         "--reservoir", required=True,
-        help="Reservoir name (e.g. cottage_grove).  "
+        help="Reservoir name (e.g. conchas).  "
              "Resolved to configs/reservoirs/<name>.yaml.",
     )
+
+    # ---- Reservoir config overrides (written back to YAML) ----
     p.add_argument(
-        "--run_id", type=int, default=None,
-        help="Integer run identifier.  Auto-incremented from existing "
-             "runs if omitted.",
+        "--data_path", default=None,
+        help="Override data_path in the reservoir config.",
     )
     p.add_argument(
-        "--device", default=None,
-        help="Compute device: auto | cpu | cuda | cuda:N | mps.  "
-             "Overrides deepmaxent.yaml runtime.device.",
+        "--date_column", default=None,
+        help="Override columns.date in the reservoir config.",
     )
     p.add_argument(
-        "--num_workers", type=int, default=None,
-        help="Parallel Optuna workers.  "
-             "Overrides deepmaxent.yaml runtime.num_workers.",
+        "--state_variables", nargs="+", default=None,
+        metavar="COL",
+        help="Override columns.state in the reservoir config.  "
+             "Pass exactly two column names: storage then inflow.",
     )
     p.add_argument(
         "--use_month_encoding",
         type=lambda x: x.lower() in ("true", "1", "yes"),
         default=None,
         metavar="true|false",
-        help="Include month in MDP and reward features.  "
-             "Overrides reservoir YAML columns.use_month_encoding.",
+        help="Override columns.use_month_encoding (true|false).",
     )
     p.add_argument(
         "--reward_features", nargs="*", default=None,
         metavar="COL",
-        help="Extra CSV columns conditioning the reward network only "
-             "(conditional IRL).  Overrides reservoir YAML "
-             "deepmaxent.reward_features.",
+        help="Override deepmaxent.reward_features.  Extra CSV columns that "
+             "condition the reward network (conditional IRL).  "
+             "Pass no values to set an empty list.",
     )
     p.add_argument(
-        "--data_path", default=None,
-        help="Path to reservoir CSV.  Overrides reservoir YAML data_path.",
+        "--split_train", type=int, default=None,
+        help="Override split.train in the reservoir config.",
     )
+    p.add_argument(
+        "--split_val", type=int, default=None,
+        help="Override split.val in the reservoir config.",
+    )
+    p.add_argument(
+        "--split_test", type=int, default=None,
+        help="Override split.test in the reservoir config.",
+    )
+
+    # ---- Algorithm config overrides (written back to deepmaxent.yaml) ----
+    p.add_argument(
+        "--device", default=None,
+        help="Override runtime.device: auto | cpu | cuda | cuda:N | mps.",
+    )
+    p.add_argument(
+        "--num_workers", type=int, default=None,
+        help="Override runtime.num_workers (parallel Optuna workers).",
+    )
+    p.add_argument(
+        "--n_trials", type=int, default=None,
+        help="Override optuna.n_trials in the algorithm config.",
+    )
+
+    # ---- Run control ----
+    p.add_argument(
+        "--run_id", type=int, default=None,
+        help="Integer run identifier.  Auto-incremented from existing "
+             "runs if omitted.",
+    )
+
     return p.parse_args()
 
 
 # ---------------------------------------------------------------------------
 # Config helpers
 # ---------------------------------------------------------------------------
+
+def _deep_update(target: dict, source: dict) -> None:
+    """
+    Recursively update *target* with values from *source*.
+
+    Descends into nested dicts rather than replacing them wholesale.
+    Compatible with ruamel.yaml CommentedMap so YAML comments survive
+    the write-back.
+    """
+    for key, val in source.items():
+        if key in target and hasattr(target[key], "items") and hasattr(val, "items"):
+            _deep_update(target[key], val)
+        else:
+            target[key] = val
+
+
+def _writeback_yaml(path: Path, updates: dict) -> None:
+    """
+    Merge *updates* into an existing YAML file and write it back.
+
+    Uses ruamel.yaml (comment-preserving) if installed; falls back to plain
+    PyYAML with a warning.
+
+    Parameters
+    ----------
+    path    : Path to the YAML file to update.
+    updates : Dict of key → value pairs to merge (may be nested).
+    """
+    try:
+        from ruamel.yaml import YAML
+        ryaml = YAML()
+        ryaml.preserve_quotes = True
+        ryaml.best_width = 4096
+        with open(path, "r") as f:
+            doc = ryaml.load(f)
+        _deep_update(doc, updates)
+        with open(path, "w") as f:
+            ryaml.dump(doc, f)
+    except ImportError:
+        import warnings
+        warnings.warn(
+            "ruamel.yaml not installed — writing YAML with plain PyYAML. "
+            "YAML comments will be lost.  Install ruamel.yaml to preserve them.",
+            UserWarning,
+            stacklevel=2,
+        )
+        with open(path, "r") as f:
+            doc = yaml.safe_load(f)
+        _deep_update(doc, updates)
+        with open(path, "w") as f:
+            yaml.dump(doc, f, default_flow_style=False, sort_keys=False)
+
+
+def _validate_required_config(res_cfg: dict, algo_cfg: dict, res_path: Path) -> None:
+    """
+    Verify that all keys required to run tune.py are present after CLI overrides.
+
+    Raises SystemExit with a clear message if anything is missing.
+    """
+    errors: List[str] = []
+
+    # Reservoir YAML
+    if not res_cfg.get("data_path"):
+        errors.append(
+            f"  reservoir config: 'data_path' is missing.\n"
+            f"    Fix: add 'data_path: <path>' to {res_path}, or pass --data_path."
+        )
+    cols = res_cfg.get("columns", {})
+    if not cols.get("date"):
+        errors.append(
+            f"  reservoir config: 'columns.date' is missing.\n"
+            f"    Fix: add it to {res_path}, or pass --date_column."
+        )
+    state_vars = cols.get("state")
+    if not state_vars or len(state_vars) < 2:
+        errors.append(
+            f"  reservoir config: 'columns.state' must have at least two entries "
+            f"(storage, inflow).\n"
+            f"    Fix: set it in {res_path}, or pass --state_variables col1 col2."
+        )
+    if not cols.get("action"):
+        errors.append(
+            f"  reservoir config: 'columns.action' is missing.\n"
+            f"    Fix: add it to {res_path}."
+        )
+    split = res_cfg.get("split", {})
+    for key in ("train", "val", "test"):
+        if split.get(key) is None:
+            errors.append(
+                f"  reservoir config: 'split.{key}' is missing.\n"
+                f"    Fix: add it to {res_path}, or pass --split_{key}."
+            )
+
+    # deepmaxent section — step-size search space must exist
+    dm = res_cfg.get("deepmaxent", {})
+    for key in ("storage_step", "release_step", "inflow_step"):
+        if not dm.get(key):
+            errors.append(
+                f"  reservoir config: 'deepmaxent.{key}' is missing.\n"
+                f"    Fix: add a list of candidate values to the 'deepmaxent:' "
+                f"section of {res_path}.\n"
+                f"    Example:  {key}: [5.0, 10.0, 15.0]"
+            )
+
+    # Algorithm YAML
+    if algo_cfg.get("optuna", {}).get("n_trials") is None:
+        errors.append(
+            "  algorithm config: 'optuna.n_trials' is missing.\n"
+            "    Fix: add it to configs/algorithms/deepmaxent.yaml, "
+            "or pass --n_trials."
+        )
+    if algo_cfg.get("state_space", {}).get("max_states") is None:
+        errors.append(
+            "  algorithm config: 'state_space.max_states' is missing.\n"
+            "    Fix: add it to configs/algorithms/deepmaxent.yaml."
+        )
+
+    if errors:
+        sys.exit(
+            f"\nERROR: Required configuration is missing:\n\n"
+            + "\n".join(errors)
+            + "\n"
+        )
+
 
 def _load_configs(reservoir: str) -> Tuple[dict, dict]:
     res_path  = _REPO_ROOT / "configs" / "reservoirs" / f"{reservoir}.yaml"
@@ -166,6 +342,12 @@ def _load_configs(reservoir: str) -> Tuple[dict, dict]:
             f"  Available reservoirs: {available}\n"
         )
 
+    if not algo_path.exists():
+        sys.exit(
+            f"\nERROR: Algorithm config not found: {algo_path}\n"
+            f"  Expected: configs/algorithms/deepmaxent.yaml\n"
+        )
+
     with open(res_path)  as f:
         res_cfg  = yaml.safe_load(f)
     with open(algo_path) as f:
@@ -175,7 +357,7 @@ def _load_configs(reservoir: str) -> Tuple[dict, dict]:
 
 
 def _resolve_device(args: argparse.Namespace, algo_cfg: dict) -> torch.device:
-    raw = args.device or algo_cfg["runtime"].get("device") or "auto"
+    raw = args.device or algo_cfg.get("runtime", {}).get("device") or "auto"
     if raw == "auto":
         raw = "cuda" if torch.cuda.is_available() else "cpu"
     return torch.device(raw)
@@ -184,8 +366,8 @@ def _resolve_device(args: argparse.Namespace, algo_cfg: dict) -> torch.device:
 def _resolve_n_jobs(args: argparse.Namespace, algo_cfg: dict) -> int:
     return (
         args.num_workers
-        or algo_cfg["runtime"].get("num_workers")
-        or algo_cfg["optuna"].get("n_jobs")
+        or algo_cfg.get("runtime", {}).get("num_workers")
+        or algo_cfg.get("optuna", {}).get("n_jobs")
         or 1
     )
 
@@ -252,8 +434,9 @@ def _suggest(trial: optuna.Trial, name: str, spec: Any) -> Any:
     log  = spec.get("log",  False)
     step = spec.get("step", None)
     if step is not None:
+        # step and log are mutually exclusive in Optuna — step takes priority
         return trial.suggest_float(name, low, high, step=step)
-    return trial.suggest_float(name, low, high, log=log)
+    return trial.suggest_float(name, low, high, log=log)  # log=False if absent
 
 
 # ---------------------------------------------------------------------------
@@ -555,22 +738,84 @@ def main() -> None:
 
     # ---- Load configs ----
     res_cfg, algo_cfg = _load_configs(args.reservoir)
+    res_cfg_path  = _REPO_ROOT / "configs" / "reservoirs" / f"{args.reservoir}.yaml"
+    algo_cfg_path = _REPO_ROOT / "configs" / "algorithms" / "deepmaxent.yaml"
 
-    # ---- Resolve CLI overrides ----
-    use_month_encoding: bool = (
-        args.use_month_encoding
-        if args.use_month_encoding is not None
-        else bool(res_cfg["columns"].get("use_month_encoding", True))
+    # ---- Apply CLI overrides and collect changes for write-back ----
+    res_updates:  dict = {}
+    algo_updates: dict = {}
+
+    if args.data_path is not None:
+        res_cfg["data_path"] = args.data_path
+        res_updates["data_path"] = args.data_path
+
+    if args.date_column is not None:
+        res_cfg.setdefault("columns", {})["date"] = args.date_column
+        res_updates.setdefault("columns", {})["date"] = args.date_column
+
+    if args.state_variables is not None:
+        if len(args.state_variables) < 2:
+            sys.exit(
+                "\nERROR: --state_variables requires at least two column names "
+                "(storage, inflow).\n"
+                f"  Provided: {args.state_variables}\n"
+            )
+        res_cfg.setdefault("columns", {})["state"] = args.state_variables
+        res_updates.setdefault("columns", {})["state"] = args.state_variables
+
+    if args.use_month_encoding is not None:
+        res_cfg.setdefault("columns", {})["use_month_encoding"] = args.use_month_encoding
+        res_updates.setdefault("columns", {})["use_month_encoding"] = args.use_month_encoding
+
+    if args.reward_features is not None:
+        # nargs="*" with no values → empty list; with values → list of cols
+        res_cfg.setdefault("deepmaxent", {})["reward_features"] = args.reward_features
+        res_updates.setdefault("deepmaxent", {})["reward_features"] = args.reward_features
+
+    if args.split_train is not None:
+        res_cfg.setdefault("split", {})["train"] = args.split_train
+        res_updates.setdefault("split", {})["train"] = args.split_train
+
+    if args.split_val is not None:
+        res_cfg.setdefault("split", {})["val"] = args.split_val
+        res_updates.setdefault("split", {})["val"] = args.split_val
+
+    if args.split_test is not None:
+        res_cfg.setdefault("split", {})["test"] = args.split_test
+        res_updates.setdefault("split", {})["test"] = args.split_test
+
+    if args.device is not None:
+        algo_cfg.setdefault("runtime", {})["device"] = args.device
+        algo_updates.setdefault("runtime", {})["device"] = args.device
+
+    if args.num_workers is not None:
+        algo_cfg.setdefault("runtime", {})["num_workers"] = args.num_workers
+        algo_updates.setdefault("runtime", {})["num_workers"] = args.num_workers
+
+    if args.n_trials is not None:
+        algo_cfg.setdefault("optuna", {})["n_trials"] = args.n_trials
+        algo_updates.setdefault("optuna", {})["n_trials"] = args.n_trials
+
+    # ---- Write overrides back to YAML for reproducibility ----
+    if res_updates:
+        _writeback_yaml(res_cfg_path, res_updates)
+    if algo_updates:
+        _writeback_yaml(algo_cfg_path, algo_updates)
+
+    # ---- Validate all required config keys are present ----
+    _validate_required_config(res_cfg, algo_cfg, res_cfg_path)
+
+    # ---- Resolve effective runtime settings ----
+    use_month_encoding: bool = bool(
+        res_cfg["columns"].get("use_month_encoding", True)
     )
-    reward_features: List[str] = (
-        args.reward_features
-        if args.reward_features is not None
-        else list(res_cfg.get("deepmaxent", {}).get("reward_features", []))
+    reward_features: List[str] = list(
+        res_cfg.get("deepmaxent", {}).get("reward_features", [])
     )
     data_path = _resolve_data_path(args, res_cfg)
     device    = _resolve_device(args, algo_cfg)
     n_jobs    = _resolve_n_jobs(args, algo_cfg)
-    n_trials  = algo_cfg["optuna"]["n_trials"]
+    n_trials  = int(algo_cfg["optuna"]["n_trials"])
 
     # ---- Run folder ----
     run_dir, run_id = _make_run_folder(args.reservoir, args.run_id)
@@ -584,16 +829,17 @@ def main() -> None:
     print(f"  Data          : {data_path}")
     print()
 
-    # ---- Column names from reservoir YAML ----
-    storage_col = res_cfg["columns"]["state"][0]
+    # ---- Column names from (possibly updated) reservoir config ----
+    storage_col = str(res_cfg["columns"]["state"][0])
     action_col  = str(res_cfg["columns"]["action"])
-    inflow_col  = res_cfg["columns"]["state"][1]
+    inflow_col  = str(res_cfg["columns"]["state"][1])
+    date_col    = str(res_cfg["columns"]["date"])
 
     # ---- Load data once (shared across all trials) ----
     print("  Loading and splitting data...")
     _, train_data, val_data, _, train_years, val_years, _ = load_and_split_data(
         str(data_path),
-        date_col = res_cfg["columns"]["date"],
+        date_col = date_col,
         n_train  = int(res_cfg["split"]["train"]),
         n_val    = int(res_cfg["split"]["val"]),
         n_test   = int(res_cfg["split"]["test"]),
@@ -698,11 +944,17 @@ def main() -> None:
         "tune": {
             "reservoir":          args.reservoir,
             "run_id":             run_id,
-            "device":             args.device,
-            "num_workers":        args.num_workers,
+            "data_path":          args.data_path,
+            "date_column":        args.date_column,
+            "state_variables":    args.state_variables,
             "use_month_encoding": args.use_month_encoding,
             "reward_features":    args.reward_features,
-            "data_path":          args.data_path,
+            "split_train":        args.split_train,
+            "split_val":          args.split_val,
+            "split_test":         args.split_test,
+            "device":             args.device,
+            "num_workers":        args.num_workers,
+            "n_trials":           args.n_trials,
             "timestamp":          datetime.now().isoformat(timespec="seconds"),
         }
     }

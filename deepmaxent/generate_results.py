@@ -26,19 +26,22 @@ SAVF diff is computed once from the full Pi on the test split.
 Outputs
 -------
 results/<reservoir>/deepmaxent/<run_id>/
-    test_metrics.json   — release/storage corr, nRMSE, MAE; SAVF diff / overlap.
-    release_test.png    — observed (blue) vs median MC (red) + IQR band (salmon).
-    storage_test.png    — same style for reservoir storage.
-    run_args.json       — appended generate_results section.
+    test_metrics.json               — release/storage corr, nRMSE, MAE; SAVF diff / overlap.
+    release_test.png                — observed (blue) vs median MC (red) + IQR band (salmon).
+    storage_test.png                — same style for reservoir storage.
+    shap_reward/
+        importance_heatmap.png      — monthly feature importance heatmap (use_month_encoding=True)
+                                      OR global importance bar chart (use_month_encoding=False).
+    run_args.json                   — appended generate_results section.
 
 Usage
 -----
 # Standard
 python deepmaxent/generate_results.py --reservoir conchas --run_id 1
 
-# Override device and rollout count
+# Override device, rollout count, and SHAP sample sizes
 python deepmaxent/generate_results.py --reservoir conchas --run_id 1 \\
-    --device cpu --n_mc 50
+    --device cpu --n_mc 50 --n_shap_bg 100 --n_shap_explain 50
 """
 
 from __future__ import annotations
@@ -71,7 +74,40 @@ from deepmaxent.core import (
     load_and_split_data,
 )
 from utils.metrics import nrmse, safe_pearsonr
-from utils.runs import _find_run_folder
+
+
+def _find_deepmaxent_run_folder(base_dir: Path, run_id: int) -> Path:
+    """
+    Locate the deepmaxent run folder at results/<reservoir>/deepmaxent/<run_id>/.
+
+    deepmaxent uses pure integer folder names (e.g. '1', '2') — not the
+    '<int>_<policy_type>' pattern used by BC / IQ-Learn.  Using
+    utils.runs._find_run_folder would fail because it requires the
+    '<int>_<policy_type>' naming convention.
+
+    Exits with a clear error if the folder does not exist.
+    """
+    if not base_dir.exists():
+        sys.exit(
+            f"\nERROR: Results directory does not exist: {base_dir}\n"
+            f"  Run deepmaxent/tune.py for this reservoir first.\n"
+        )
+
+    run_dir = base_dir / str(run_id)
+    if not run_dir.exists():
+        available = sorted(
+            d.name for d in base_dir.iterdir()
+            if d.is_dir() and d.name.isdigit()
+        )
+        avail_str = ", ".join(available) if available else "none found"
+        sys.exit(
+            f"\nERROR: No run folder found for run_id={run_id} in:\n"
+            f"  {base_dir}\n\n"
+            f"  Available runs: {avail_str}\n"
+            f"  Pass the correct --run_id, or run deepmaxent/tune.py first.\n"
+        )
+
+    return run_dir
 
 # ---------------------------------------------------------------------------
 # Plot colours (consistent with other generate_results modules)
@@ -282,6 +318,323 @@ def _plot_and_save(
 
 
 # =============================================================================
+# SHAP analysis -- reward network feature importance
+# =============================================================================
+
+def _run_shap_reward_heatmap(
+    trainer,
+    test_trajs_raw: List,
+    cfg,
+    device:       torch.device,
+    save_dir:     Path,
+    n_background: int = 100,
+    n_explain:    int = 50,
+) -> None:
+    """
+    Compute SHAP feature importance for the DeepMaxEnt reward network.
+
+    use_month_encoding=True  ->  Monthly heatmap + Total column.
+
+        Columns Jan-Dec  : KernelSHAP with sin/cos FIXED at that month's value.
+            Only [Storage, Inflow, rf..., Release] are exposed to SHAP.
+            Month encoding is held constant so it cannot be attributed --
+            this correctly isolates within-month importance of the other features.
+            Values normalised to sum = 100 % per monthly column.
+
+        Column "Total"   : KernelSHAP on the FULL feature vector (all months,
+            sin/cos free to vary).  sin + cos |SHAP| combined into "Month" row.
+            Normalised to sum = 100 %.
+
+        Rows: Storage, Net Inflow, [reward_features], Release, Month.
+              Month row is blank (gray) in the monthly columns; filled in Total.
+
+    use_month_encoding=False ->  Global horizontal bar chart.
+        Values = mean |SHAP| per feature normalised to sum = 100 %.
+    """
+    try:
+        import shap as shap_lib
+    except ImportError:
+        print(
+            "\nSKIP: shap not installed -- skipping SHAP analysis.\n"
+            "  Install with:  pip install shap\n"
+        )
+        return
+
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from matplotlib.colors import Normalize
+    except ImportError:
+        print("\nSKIP: matplotlib not installed -- skipping SHAP plot.\n")
+        return
+
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    # ------------------------------------------------------------------
+    # Extract all test data from raw trajectories
+    # raw row: [storage(0), month_1based(1), release(2), inflow(3), rf(4+)]
+    # ------------------------------------------------------------------
+    all_storage: List[float] = []
+    all_inflow:  List[float] = []
+    all_release: List[float] = []
+    all_month_1: List[int]   = []   # 1-based (1-12)
+    rf_lists: dict = {rf: [] for rf in cfg.reward_features}
+
+    for traj in test_trajs_raw:
+        for row in traj:
+            all_storage.append(row[0])
+            all_month_1.append(int(row[1]))
+            all_release.append(row[2])
+            all_inflow.append(row[3])
+            for k, rf in enumerate(cfg.reward_features):
+                rf_lists[rf].append(row[4 + k])
+
+    all_storage = np.array(all_storage, dtype=np.float64)
+    all_inflow  = np.array(all_inflow,  dtype=np.float64)
+    all_release = np.array(all_release, dtype=np.float64)
+    all_month_1 = np.array(all_month_1, dtype=np.int32)
+    all_month_0 = (all_month_1 - 1).astype(np.float64)   # 0-based for _build_features
+    rf_arrays   = {rf: np.array(rf_lists[rf], dtype=np.float64)
+                   for rf in cfg.reward_features}
+
+    # Full feature matrix -- shape (N, n_inputs), same z-scoring as training
+    X_full = trainer._build_features(
+        all_storage, all_inflow, rf_arrays, all_release, all_month_0,
+    ).astype(np.float64)   # KernelSHAP requires float64
+
+    N, n_raw_cols = X_full.shape
+
+    # sin/cos column indices (last two when use_month_encoding=True)
+    sin_idx = n_raw_cols - 2 if cfg.use_month_encoding else None
+    cos_idx = n_raw_cols - 1 if cfg.use_month_encoding else None
+
+    # Core feature labels (no Month -- Month is its own row only in Total column)
+    base_labels  = ["Storage", "Net Inflow"]
+    rf_labels    = [rf.replace("_", " ").title() for rf in cfg.reward_features]
+    action_label = ["Release"]
+    core_labels  = base_labels + rf_labels + action_label
+    n_core       = len(core_labels)
+
+    rng = np.random.default_rng(seed=42)
+
+    # Full callable (all features) -- used for the Total column
+    def _reward_fn_full(X: np.ndarray) -> np.ndarray:
+        X_t = torch.tensor(X.astype(np.float32), device=device)
+        with torch.no_grad():
+            return trainer.r_net(X_t).squeeze(-1).cpu().numpy().astype(np.float64)
+
+    # ==================================================================
+    # CASE A: Monthly heatmap + Total column  (use_month_encoding=True)
+    # ==================================================================
+    if cfg.use_month_encoding:
+        month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                       "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+        # Rows: core features + Month row (Month only filled in Total column)
+        row_labels = core_labels + ["Month"]
+        n_rows     = len(row_labels)
+
+        # importance_mat: shape (n_rows, 13)
+        # cols 0-11 = Jan-Dec  (Month row = NaN = rendered gray)
+        # col  12   = Total    (all rows filled)
+        importance_mat = np.full((n_rows, 13), np.nan, dtype=np.float64)
+
+        # Reduced feature matrix -- strip sin/cos for monthly SHAP
+        X_reduced = X_full[:, :sin_idx]   # (N, n_inputs - 2)
+
+        # Background for monthly SHAP: from X_reduced (all months)
+        bg_size  = min(n_background, N)
+        bg_idx   = rng.choice(N, size=bg_size, replace=False)
+        X_bg_red = X_reduced[bg_idx]
+
+        print("  Computing per-month SHAP (Month encoding held fixed per month):")
+        for m_idx, month in enumerate(range(1, 13)):
+            month_mask = all_month_1 == month
+            n_month    = int(month_mask.sum())
+
+            if n_month == 0:
+                print(f"    Month {month:2d} ({month_names[m_idx]}) -- no data, skipping")
+                importance_mat[:n_core, m_idx] = 0.0
+                continue
+
+            # Fixed sin/cos for this month (0-based index = month - 1)
+            m0        = float(month - 1)
+            sin_fixed = float(np.sin(2.0 * np.pi * m0 / 12.0))
+            cos_fixed = float(np.cos(2.0 * np.pi * m0 / 12.0))
+
+            # Callable: appends fixed sin/cos so the reward network sees the
+            # full feature vector, but SHAP only attributes importance to the
+            # core features (sin/cos are constant => zero SHAP contribution).
+            def _reward_fn_monthly(X_red: np.ndarray,
+                                   _sf=sin_fixed, _cf=cos_fixed) -> np.ndarray:
+                sin_col = np.full((len(X_red), 1), _sf)
+                cos_col = np.full((len(X_red), 1), _cf)
+                X_f = np.hstack([X_red, sin_col, cos_col])
+                X_t = torch.tensor(X_f.astype(np.float32), device=device)
+                with torch.no_grad():
+                    return trainer.r_net(X_t).squeeze(-1).cpu().numpy().astype(np.float64)
+
+            X_month  = X_reduced[month_mask]
+            exp_size = min(n_explain, n_month)
+            exp_idx  = rng.choice(n_month, size=exp_size, replace=False)
+            X_exp    = X_month[exp_idx]
+
+            explainer = shap_lib.KernelExplainer(_reward_fn_monthly, X_bg_red)
+            shap_vals = explainer.shap_values(X_exp, nsamples=50, silent=True)
+            # shape: (exp_size, n_core)
+
+            mean_abs = np.abs(shap_vals).mean(axis=0)   # (n_core,)
+            total    = mean_abs.sum()
+            importance_mat[:n_core, m_idx] = (
+                100.0 * mean_abs / total if total > 0 else mean_abs
+            )
+            # Month row stays NaN for monthly columns (rendered gray)
+
+            print(f"    Month {month:2d} ({month_names[m_idx]}) -- done "
+                  f"({exp_size} explain pts, {n_month} available)")
+
+        # ------------------------------------------------------------------
+        # Total column: full feature vector, all months pooled
+        # ------------------------------------------------------------------
+        print("  Computing Total SHAP (all features, all months pooled) ...")
+        bg_idx_t  = rng.choice(N, size=min(n_background, N), replace=False)
+        exp_idx_t = rng.choice(N, size=min(n_explain,    N), replace=False)
+        X_bg_t    = X_full[bg_idx_t]
+        X_exp_t   = X_full[exp_idx_t]
+
+        explainer_t = shap_lib.KernelExplainer(_reward_fn_full, X_bg_t)
+        shap_t      = explainer_t.shap_values(X_exp_t, nsamples=50, silent=True)
+        # shape: (exp_size, n_raw_cols)
+
+        mean_abs_t = np.abs(shap_t).mean(axis=0)   # (n_raw_cols,)
+        core_abs   = mean_abs_t[:sin_idx]                                   # Storage, Inflow, rf..., Release
+        month_abs  = mean_abs_t[sin_idx] + mean_abs_t[cos_idx]             # sin + cos combined
+        all_abs    = np.append(core_abs, month_abs)
+        total_sum  = all_abs.sum()
+        importance_mat[:, 12] = (
+            100.0 * all_abs / total_sum if total_sum > 0 else all_abs
+        )
+        print("  Total column done.")
+
+        # ------------------------------------------------------------------
+        # Plot heatmap (cols: Jan-Dec + Total, rows: core features + Month)
+        # ------------------------------------------------------------------
+        col_labels = month_names + ["Total"]
+        n_cols     = 13
+        cmap       = plt.cm.YlOrRd
+        norm_c     = Normalize(vmin=0, vmax=100)
+
+        fig_h = max(2.5, 0.85 * n_rows + 1.2)
+        fig, ax = plt.subplots(figsize=(17, fig_h))
+
+        for fi in range(n_rows):
+            for ci in range(n_cols):
+                val = importance_mat[fi, ci]
+                if np.isnan(val):
+                    face   = "#D3D3D3"    # light gray for blank Month cells
+                    txt    = ""
+                    tcolor = "#D3D3D3"
+                else:
+                    face   = cmap(norm_c(val))
+                    txt    = f"{val:.1f}"
+                    tcolor = "white" if val > 60 else "black"
+
+                rect = plt.Rectangle(
+                    [ci - 0.5, fi - 0.5], 1, 1,
+                    facecolor=face, edgecolor="white", linewidth=1.5,
+                )
+                ax.add_patch(rect)
+                if txt:
+                    ax.text(
+                        ci, fi, txt,
+                        ha="center", va="center",
+                        fontsize=11, fontweight="bold", color=tcolor,
+                    )
+
+        # Vertical separator between Dec and Total
+        ax.axvline(x=11.5, color="white", linewidth=4)
+
+        ax.set_xlim(-0.5, n_cols - 0.5)
+        ax.set_ylim(-0.5, n_rows - 0.5)
+        ax.invert_yaxis()
+
+        ax.set_xticks(range(n_cols))
+        ax.set_xticklabels(col_labels, fontsize=13, fontweight="bold")
+        ax.set_yticks(range(n_rows))
+        ax.set_yticklabels(row_labels, fontsize=13, fontweight="bold")
+        ax.tick_params(axis="both", length=0)
+        ax.xaxis.set_ticks_position("bottom")
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+
+        ax.set_title(
+            "Reward Network Monthly Feature Importance (SHAP)",
+            fontsize=14, fontweight="bold", pad=12,
+        )
+
+        plt.tight_layout()
+        save_path = save_dir / "importance_heatmap.png"
+        plt.savefig(save_path, dpi=200, bbox_inches="tight")
+        plt.close(fig)
+        print(f"  Figure saved  -> {save_path}")
+
+    # ==================================================================
+    # CASE B: Global bar chart  (use_month_encoding=False)
+    # ==================================================================
+    else:
+        bg_size  = min(n_background, N)
+        exp_size = min(n_explain,    N)
+        bg_idx   = rng.choice(N, size=bg_size,  replace=False)
+        exp_idx  = rng.choice(N, size=exp_size, replace=False)
+        X_bg     = X_full[bg_idx]
+        X_exp    = X_full[exp_idx]
+
+        print("  Computing global SHAP ...")
+        explainer = shap_lib.KernelExplainer(_reward_fn_full, X_bg)
+        shap_vals = explainer.shap_values(X_exp, nsamples=50, silent=True)
+
+        mean_abs = np.abs(shap_vals).mean(axis=0)
+        total    = mean_abs.sum()
+        pcts     = 100.0 * mean_abs / total if total > 0 else mean_abs
+
+        order         = np.argsort(pcts)[::-1]
+        labels_sorted = [core_labels[i] for i in order]
+        pcts_sorted   = pcts[order]
+
+        n_display = len(core_labels)
+        fig_h     = max(3.0, 0.55 * n_display + 1.2)
+        fig, ax   = plt.subplots(figsize=(7, fig_h))
+
+        bar_colors = plt.cm.YlOrRd(pcts_sorted / 100.0)
+        bars       = ax.barh(range(n_display), pcts_sorted, color=bar_colors)
+
+        ax.set_yticks(range(n_display))
+        ax.set_yticklabels(labels_sorted, fontsize=12, fontweight="bold")
+        ax.set_xlabel("Mean |SHAP| Contribution (%)", fontsize=12)
+        ax.set_title(
+            "Reward Network Feature Importance (SHAP)",
+            fontsize=13, fontweight="bold", pad=10,
+        )
+        ax.invert_yaxis()
+
+        for i, (_, val) in enumerate(zip(bars, pcts_sorted)):
+            ax.text(
+                val + 0.5, i, f"{val:.1f}%",
+                va="center", fontsize=10, fontweight="bold",
+            )
+
+        ax.set_xlim(0, float(pcts_sorted.max()) * 1.22)
+        for spine in ["top", "right"]:
+            ax.spines[spine].set_visible(False)
+
+        plt.tight_layout()
+        save_path = save_dir / "importance_heatmap.png"
+        plt.savefig(save_path, dpi=200, bbox_inches="tight")
+        plt.close(fig)
+        print(f"  Figure saved  -> {save_path}")
+
+# =============================================================================
 # CLI
 # =============================================================================
 
@@ -319,6 +672,20 @@ def _parse_args() -> argparse.Namespace:
         "--data_path", default=None,
         help="Override data_path from reservoir YAML.",
     )
+    p.add_argument(
+        "--n_shap_bg", type=int, default=100,
+        help=(
+            "Number of KernelSHAP background samples drawn from all test data "
+            "(per month when use_month_encoding=True, global otherwise)."
+        ),
+    )
+    p.add_argument(
+        "--n_shap_explain", type=int, default=50,
+        help=(
+            "Number of KernelSHAP explain samples per month "
+            "(monthly mode) or globally (no-month mode)."
+        ),
+    )
     return p.parse_args()
 
 
@@ -337,7 +704,7 @@ def main() -> None:
     # ------------------------------------------------------------------
     res_cfg_path = _ROOT / "configs" / "reservoirs" / f"{args.reservoir}.yaml"
     dm_base_dir  = _ROOT / "results" / args.reservoir / "deepmaxent"
-    results_dir  = _find_run_folder(dm_base_dir, args.run_id)
+    results_dir  = _find_deepmaxent_run_folder(dm_base_dir, args.run_id)
 
     if not res_cfg_path.exists():
         sys.exit(
@@ -359,7 +726,7 @@ def main() -> None:
     n_val       = int(res_cfg["split"]["val"])
     n_test      = int(res_cfg["split"]["test"])
 
-    # Resolve data path — handle Windows backslash in YAML on Linux
+    # Resolve data path
     if args.data_path is not None:
         data_path = args.data_path
     else:
@@ -369,7 +736,7 @@ def main() -> None:
     # ------------------------------------------------------------------
     # Load checkpoint
     # ------------------------------------------------------------------
-    print(f"\nLoading checkpoint …")
+    print(f"\nLoading checkpoint ...")
     ckpt = _load_checkpoint(results_dir, args.reservoir)
     cfg  = DeepMaxEntConfig.from_dict(ckpt["config"])
 
@@ -411,24 +778,18 @@ def main() -> None:
     # ------------------------------------------------------------------
     # Load and split data
     # ------------------------------------------------------------------
-    print(f"\nLoading data …")
+    print(f"\nLoading data ...")
     (_, train_data, _, test_data,
      train_years, _, test_years) = load_and_split_data(
         data_path, date_col, n_train, n_val, n_test,
     )
-    print(
-        f"  Train years : {train_years[0]}–{train_years[-1]}  "
-        f"({len(train_data)} rows)"
-    )
-    print(
-        f"  Test years  : {test_years[0]}–{test_years[-1]}  "
-        f"({len(test_data)} rows)"
-    )
+    print(f"  Train years : {train_years[0]}-{train_years[-1]}  ({len(train_data)} rows)")
+    print(f"  Test years  : {test_years[0]}-{test_years[-1]}  ({len(test_data)} rows)")
 
     # ------------------------------------------------------------------
     # Build MDP structures from training data
     # ------------------------------------------------------------------
-    print("\nBuilding MDP …", end="", flush=True)
+    print("\nBuilding MDP ...", end="", flush=True)
 
     s_space, r_space, i_space = create_spaces(
         train_data, cfg, storage_col, action_col, inflow_col,
@@ -451,18 +812,16 @@ def main() -> None:
     )
     print(" done.")
     print(
-        f"  State space  : {len(s_space)} storage × {len(i_space)} inflow "
+        f"  State space  : {len(s_space)} storage x {len(i_space)} inflow "
         f"= {len(s_space) * len(i_space)} states"
     )
-    print(
-        f"  Action space : {len(r_space)} release bins"
-    )
+    print(f"  Action space : {len(r_space)} release bins")
     print(f"  Months       : {n_months}")
 
     # ------------------------------------------------------------------
     # Build trainer and load saved reward-network weights
     # ------------------------------------------------------------------
-    print("\nBuilding MaxEntTrainer …", end="", flush=True)
+    print("\nBuilding MaxEntTrainer ...", end="", flush=True)
     trainer = MaxEntTrainer(
         cfg          = cfg,
         P            = P,
@@ -487,7 +846,7 @@ def main() -> None:
     # ------------------------------------------------------------------
     # Compute reward table and policy (once)
     # ------------------------------------------------------------------
-    print("Computing reward table and policy …", end="", flush=True)
+    print("Computing reward table and policy ...", end="", flush=True)
     R  = trainer._calc_rewards()
     Pi = trainer._solve_mdp(R)
     print(" done.")
@@ -495,22 +854,15 @@ def main() -> None:
     # ------------------------------------------------------------------
     # SAVF evaluation on test split
     # ------------------------------------------------------------------
-    print("Evaluating test SAVF …", end="", flush=True)
+    print("Evaluating test SAVF ...", end="", flush=True)
     test_savf_diff, test_savf_overlap = trainer.evaluate_savf(test_trajs_d, Pi=Pi)
-    print(
-        f" done.  "
-        f"(savf_diff={test_savf_diff:.4f}, overlap={test_savf_overlap:.2f}%)"
-    )
+    print(f" done.  (savf_diff={test_savf_diff:.4f}, overlap={test_savf_overlap:.2f}%)")
 
     # ------------------------------------------------------------------
-    # Monte Carlo rollouts — n_mc independent trajectories
-    #
-    # Each call to monte_carlo_simulate with n_sims=1 produces one
-    # independent stochastic trajectory sampled from Pi.  Collecting
-    # n_mc such trajectories gives the full ensemble for IQR plotting.
+    # Monte Carlo rollouts
     # ------------------------------------------------------------------
     np.random.seed(42)
-    print(f"\nRunning {args.n_mc} MC rollouts …", end="", flush=True)
+    print(f"\nRunning {args.n_mc} MC rollouts ...", end="", flush=True)
 
     mc_release_list: List[np.ndarray] = []
     mc_storage_list: List[np.ndarray] = []
@@ -525,20 +877,15 @@ def main() -> None:
     mc_release_mat = np.stack(mc_release_list)   # (n_mc, N)
     mc_storage_mat = np.stack(mc_storage_list)   # (n_mc, N)
 
-    # Observed expert sequences from raw test trajectories
     # Raw row layout: [storage(0), month(1), release(2), net_inflow(3), ...]
-    expert_release = np.concatenate(
-        [[row[2] for row in traj] for traj in test_trajs_raw]
-    )
-    expert_storage = np.concatenate(
-        [[row[0] for row in traj] for traj in test_trajs_raw]
-    )
+    expert_release = np.concatenate([[row[2] for row in traj] for traj in test_trajs_raw])
+    expert_storage = np.concatenate([[row[0] for row in traj] for traj in test_trajs_raw])
     print(" done.")
 
     # ------------------------------------------------------------------
-    # Metrics (mean MC trajectory vs. observed)
+    # Metrics
     # ------------------------------------------------------------------
-    print("Computing metrics …", end="", flush=True)
+    print("Computing metrics ...", end="", flush=True)
 
     mean_release = mc_release_mat.mean(axis=0)
     mean_storage = mc_storage_mat.mean(axis=0)
@@ -549,9 +896,8 @@ def main() -> None:
     storage_nrmse_val = float(nrmse(expert_storage, mean_storage))
     release_mae       = float(np.mean(np.abs(expert_release - mean_release)))
     storage_mae       = float(np.mean(np.abs(expert_storage - mean_storage)))
-
-    release_corr = float(release_corr)
-    storage_corr = float(storage_corr)
+    release_corr      = float(release_corr)
+    storage_corr      = float(storage_corr)
     print(" done.")
 
     print(
@@ -575,20 +921,20 @@ def main() -> None:
         "run_id":    args.run_id,
         "n_mc":      args.n_mc,
         "metrics": {
-            "release_corr":           round(release_corr,       6),
-            "release_nrmse":          round(release_nrmse_val,  6),
-            "release_mae":            round(release_mae,        6),
-            "storage_corr":           round(storage_corr,       6),
-            "storage_nrmse":          round(storage_nrmse_val,  6),
-            "storage_mae":            round(storage_mae,        6),
-            "test_savf_diff":         round(float(test_savf_diff),    6),
-            "test_savf_overlap_pct":  round(float(test_savf_overlap), 4),
+            "release_corr":          round(release_corr,       6),
+            "release_nrmse":         round(release_nrmse_val,  6),
+            "release_mae":           round(release_mae,        6),
+            "storage_corr":          round(storage_corr,       6),
+            "storage_nrmse":         round(storage_nrmse_val,  6),
+            "storage_mae":           round(storage_mae,        6),
+            "test_savf_diff":        round(float(test_savf_diff),    6),
+            "test_savf_overlap_pct": round(float(test_savf_overlap), 4),
         },
     }
     metrics_path = results_dir / "test_metrics.json"
     with open(metrics_path, "w") as f:
         json.dump(metrics_out, f, indent=2)
-    print(f"\nMetrics saved → {metrics_path}")
+    print(f"\nMetrics saved -> {metrics_path}")
 
     # ------------------------------------------------------------------
     # release_test.png
@@ -615,7 +961,21 @@ def main() -> None:
     )
 
     # ------------------------------------------------------------------
-    # Update run_args.json (append generate_results section)
+    # SHAP monthly importance heatmap (reward network)
+    # ------------------------------------------------------------------
+    print("\nRunning SHAP analysis (reward network) ...")
+    _run_shap_reward_heatmap(
+        trainer        = trainer,
+        test_trajs_raw = test_trajs_raw,
+        cfg            = cfg,
+        device         = device,
+        save_dir       = results_dir / "shap_reward",
+        n_background   = args.n_shap_bg,
+        n_explain      = args.n_shap_explain,
+    )
+
+    # ------------------------------------------------------------------
+    # Update run_args.json
     # ------------------------------------------------------------------
     run_args_path = results_dir / "run_args.json"
     run_args: dict = {}
@@ -624,16 +984,18 @@ def main() -> None:
             run_args = json.load(f)
 
     run_args["generate_results"] = {
-        "reservoir":   args.reservoir,
-        "run_id":      args.run_id,
-        "device_cli":  args.device,
-        "device_used": resolved,
-        "n_mc":        args.n_mc,
-        "timestamp":   datetime.now().isoformat(timespec="seconds"),
+        "reservoir":      args.reservoir,
+        "run_id":         args.run_id,
+        "device_cli":     args.device,
+        "device_used":    resolved,
+        "n_mc":           args.n_mc,
+        "n_shap_bg":      args.n_shap_bg,
+        "n_shap_explain": args.n_shap_explain,
+        "timestamp":      datetime.now().isoformat(timespec="seconds"),
     }
     with open(run_args_path, "w") as f:
         json.dump(run_args, f, indent=2)
-    print(f"Run args updated → {run_args_path}\n")
+    print(f"Run args updated -> {run_args_path}\n")
 
 
 if __name__ == "__main__":

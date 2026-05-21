@@ -20,7 +20,7 @@
 #   --split_test         <int>
 # --------------------------------------------------------------------------
 
-data_path: data\conchas.csv
+data_path: data/conchas.csv
 
 columns:
   date: date

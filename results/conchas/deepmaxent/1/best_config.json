@@ -1,0 +1,28 @@
+{
+  "reservoir": "conchas",
+  "run_id": 1,
+  "best_val_savf_diff": 586.3797428184895,
+  "trial_number": 0,
+  "use_month_encoding": false,
+  "reward_features": [],
+  "config": {
+    "seed": 42,
+    "storage_step": 5.0,
+    "release_step": 25.0,
+    "inflow_step": 20.0,
+    "gamma": 0.95,
+    "tau": 0.1584085680149199,
+    "hidden_dim1": 64,
+    "hidden_dim2": 512,
+    "dropout": 0.4,
+    "lr": 1.8057402610869235e-05,
+    "n_iterations": 200,
+    "batch_size": 5000,
+    "early_stop_patience": 150,
+    "convergence_threshold": 0.01,
+    "tolerance": 1e-06,
+    "n_mc_simulations": 50,
+    "use_month_encoding": false,
+    "reward_features": []
+  }
+}

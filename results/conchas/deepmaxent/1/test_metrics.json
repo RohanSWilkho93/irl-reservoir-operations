@@ -1,0 +1,15 @@
+{
+  "reservoir": "conchas",
+  "run_id": 1,
+  "n_mc": 50,
+  "metrics": {
+    "release_corr": -0.000655,
+    "release_nrmse": 0.32833,
+    "release_mae": 2.033884,
+    "storage_corr": 0.930159,
+    "storage_nrmse": 0.128967,
+    "storage_mae": 10.079063,
+    "test_savf_diff": 373.974746,
+    "test_savf_overlap_pct": 48.7704
+  }
+}

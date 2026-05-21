@@ -20,12 +20,14 @@
 #   --split_test         <int>
 # --------------------------------------------------------------------------
 
-data_path: data\cottage_grove.csv
+data_path: data/cottage_grove.csv
 
 columns:
-  date:               date
-  state:              [storage, net_inflow]
-  action:             release
+  date: date
+  state:
+  - storage
+  - net_inflow
+  action: release
   use_month_encoding: true
 
 # Policy network type for this reservoir.
@@ -40,8 +42,8 @@ policy_network: beta
 # Override at runtime with --train_years, --val_years, --test_years.
 split:
   train: 14
-  val:   1
-  test:  3
+  val: 1
+  test: 3
 
 # Normalization bounds — auto-computed from the training split on first run
 # and written back here. Applied unchanged to val and test.
@@ -63,5 +65,5 @@ reservoir:
 deepmaxent:
   storage_step: [1.0, 2.0, 5.0, 10.0, 15.0]
   release_step: [5.0, 10.0, 15.0, 20.0, 25.0]
-  inflow_step:  [5.0, 10.0, 15.0, 20.0, 25.0]
+  inflow_step: [5.0, 10.0, 15.0, 20.0, 25.0]
   reward_features: []

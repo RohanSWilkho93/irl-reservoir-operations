@@ -1,0 +1,28 @@
+{
+  "reservoir": "cottage_grove",
+  "run_id": 1,
+  "best_trial": 1,
+  "best_val_savf_diff": 641.8317592952541,
+  "best_params": {
+    "storage_step": 15.0,
+    "release_step": 10.0,
+    "inflow_step": 20.0,
+    "seed": 1024,
+    "gamma": 0.95,
+    "tau": 0.044701015642822056,
+    "hidden_dim1": 64,
+    "hidden_dim2": 256,
+    "dropout": 0.30000000000000004,
+    "lr": 0.00016452276938187378,
+    "n_iterations": 300,
+    "batch_size": 2000,
+    "early_stop_patience": 50
+  },
+  "use_month_encoding": true,
+  "reward_features": [],
+  "n_trials_complete": 2,
+  "n_trials_pruned": 0,
+  "n_trials_failed": 0,
+  "elapsed_minutes": 0.6,
+  "mdp_combinations_cached": 2
+}

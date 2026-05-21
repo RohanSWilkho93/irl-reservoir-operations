@@ -1469,15 +1469,18 @@ class MaxEntTrainer:
                 "learning_rate":          current_lr,
             })
 
-            if self.verbose and epoch % 10 == 0:
+            # Track best by validation S_DeepMaxEnt (maximise)
+            is_best = val_s > best_val_s
+            if self.verbose and (epoch % 10 == 0 or is_best):
+                best_tag = "  <best>" if is_best else ""
                 print(
                     f"  [{epoch:4d}]  train_savf={train_diff:.2f}  "
                     f"val_savf={val_savf_diff:.2f}  "
                     f"val_S={val_s:.4f}  lr={current_lr:.2e}"
+                    f"{best_tag}"
                 )
 
-            # Track best by validation S_DeepMaxEnt (maximise)
-            if val_s > best_val_s:
+            if is_best:
                 best_val_s        = val_s
                 best_R            = R.copy()
                 best_Pi           = Pi.copy()

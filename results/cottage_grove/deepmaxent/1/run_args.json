@@ -1,0 +1,40 @@
+{
+  "tune": {
+    "reservoir": "cottage_grove",
+    "run_id": 1,
+    "data_path": "data/cottage_grove.csv",
+    "date_column": "date",
+    "state_variables": [
+      "storage",
+      "net_inflow"
+    ],
+    "use_month_encoding": true,
+    "reward_features": null,
+    "split_train": 14,
+    "split_val": 1,
+    "split_test": null,
+    "device": "cpu",
+    "num_workers": 1,
+    "n_trials": 2,
+    "timestamp": "2026-05-21T17:48:35"
+  },
+  "train": {
+    "reservoir": "cottage_grove",
+    "run_id": 1,
+    "device_cli": "cpu",
+    "device_used": "cpu",
+    "n_mc_per_epoch": 5,
+    "data_path_cli": "data/cottage_grove.csv",
+    "timestamp": "2026-05-21T17:50:41"
+  },
+  "generate_results": {
+    "reservoir": "cottage_grove",
+    "run_id": 1,
+    "device_cli": "cpu",
+    "device_used": "cpu",
+    "n_mc": 50,
+    "n_shap_bg": 100,
+    "n_shap_explain": 50,
+    "timestamp": "2026-05-21T18:38:20"
+  }
+}
