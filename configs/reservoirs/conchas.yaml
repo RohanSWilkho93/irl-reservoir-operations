@@ -28,7 +28,7 @@ columns:
   - storage
   - net_inflow
   action: release
-  use_month_encoding: false
+  use_month_encoding: true
 
 # Policy network type for this reservoir.
 # Options : beta | lognormal | hardgating | softgating
@@ -45,7 +45,16 @@ split:
 # Normalization bounds — auto-computed from the training split on first run
 # and written back here. Applied unchanged to val and test.
 reservoir:
-  bounds: {}
+  bounds:
+    storage:
+      min: 88.13
+      max: 393.985
+    net_inflow:
+      min: -8.678573
+      max: 104.484438
+    release:
+      min: 0.0
+      max: 19.567
 deepmaxent:
   storage_step: [1.0, 2.0, 5.0, 10.0, 15.0]
   release_step: [5.0, 10.0, 15.0, 20.0, 25.0]

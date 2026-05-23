@@ -32,8 +32,8 @@
 #   null means fall back to optuna.n_jobs below.
 # --------------------------------------------------------------------------
 runtime:
-  device:      auto
-  num_workers: ~     # null: falls back to optuna.n_jobs
+  device: cpu
+  num_workers: 1     # null: falls back to optuna.n_jobs
 
 # --------------------------------------------------------------------------
 # Optuna study settings
@@ -42,8 +42,8 @@ runtime:
 # n_jobs: used only when runtime.num_workers is null.
 # --------------------------------------------------------------------------
 optuna:
-  n_trials: 2000
-  n_jobs:   10
+  n_trials: 2
+  n_jobs: 10
 
 # --------------------------------------------------------------------------
 # Hyperparameter search space
@@ -58,19 +58,20 @@ optuna:
 search_space:
 
   # Critic network (value function — trained from scratch)
-  critic_hidden_dim:      [64, 128, 256, 512]
+  critic_hidden_dim: [64, 128, 256, 512]
   critic_n_hidden_layers: {low: 2, high: 4, type: int}
 
   # Discriminator network (reward + shaping — trained from scratch)
-  disc_hidden_dim:        [64, 128, 256, 512]
-  disc_n_hidden_layers:   {low: 2, high: 4, type: int}
+  disc_hidden_dim: [64, 128, 256, 512]
+  disc_n_hidden_layers: {low: 2, high: 4, type: int}
+  disc_dropout: {low: 0.0, high: 0.5}            # shared by reward net and shaping net
 
   # Learning rates
   # lr_policy:        policy network (initialized from BC — use a small LR)
   # lr_critic:        value function
   # lr_discriminator: AIRL discriminator
-  lr_policy:        {low: 1.0e-6, high: 1.0e-3, log: true}
-  lr_critic:        {low: 1.0e-5, high: 1.0e-2, log: true}
+  lr_policy: {low: 1.0e-6, high: 1.0e-3, log: true}
+  lr_critic: {low: 1.0e-5, high: 1.0e-2, log: true}
   lr_discriminator: {low: 1.0e-5, high: 1.0e-3, log: true}
 
   # Discriminator training
@@ -78,9 +79,9 @@ search_space:
   # warmup_disc_updates:    steps used during the warm-up phase only
   # gradient_penalty_coef:  WGAN-GP penalty weight (stabilizes discriminator training)
   # label_smoothing_epsilon: soft labels for expert (1-ε) and policy (ε) targets
-  disc_updates:            {low: 1, high: 15, type: int}
-  warmup_disc_updates:     [5, 10, 15]
-  gradient_penalty_coef:   {low: 1.0, high: 20.0}
+  disc_updates: {low: 1, high: 15, type: int}
+  warmup_disc_updates: [5, 10, 15]
+  gradient_penalty_coef: {low: 1.0, high: 20.0}
   label_smoothing_epsilon: {low: 0.0, high: 0.15}
 
   # PPO parameters
@@ -89,11 +90,11 @@ search_space:
   # clip_epsilon: PPO clipping range
   # entropy_coef: entropy bonus weight (encourages exploration)
   # ppo_epochs:  gradient steps per rollout batch
-  gamma:       [0.95, 0.99, 0.999]
-  gae_lambda:  {low: 0.90, high: 0.99}
+  gamma: [0.95, 0.99, 0.999]
+  gae_lambda: {low: 0.90, high: 0.99}
   clip_epsilon: {low: 0.1, high: 0.3}
   entropy_coef: {low: 0.001, high: 0.1, log: true}
-  ppo_epochs:   {low: 3, high: 10, type: int}
+  ppo_epochs: {low: 3, high: 10, type: int}
 
   # KL regularization
   # Penalizes divergence between the current policy and the BC prior.
@@ -105,10 +106,10 @@ search_space:
   # num_iterations:      total training iterations
   # steps_per_iteration: environment steps collected per iteration (rollout size)
   # batch_size:          minibatch size for discriminator and PPO updates
-  warmup_iterations:   [25, 50, 75, 100]
-  num_iterations:      [200, 300, 400, 500]
+  warmup_iterations: [25, 50, 75, 100]
+  num_iterations: [200, 300, 400, 500]
   steps_per_iteration: [1024, 2048, 4096]
-  batch_size:          [256, 512, 1024]
+  batch_size: [256, 512, 1024]
 
   # Early stopping patience (iterations without validation improvement)
   early_stopping_patience: [25, 50, 75, 100]

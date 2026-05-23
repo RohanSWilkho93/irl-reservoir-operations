@@ -230,6 +230,45 @@ class BetaActor(nn.Module):
 
         return PolicyOutput(action=action, alpha=alpha, beta=beta)
 
+    def get_log_prob(
+        self,
+        state:  torch.Tensor,
+        action: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Log probability log π(a|s) of a given action under the Beta policy.
+
+        Used by AIRLDiscriminator.forward() to compute
+        D(s, a, s') = sigmoid(f(s,a,s') − log π(a|s)).
+
+        Parameters
+        ----------
+        state  : (batch, state_dim) — normalised state.
+        action : (batch, action_dim) — action to evaluate.
+
+        Returns
+        -------
+        torch.Tensor of shape (batch, 1), clamped to (−20, 2).
+        """
+        feat  = self.encoder(state)
+        alpha = torch.clamp(
+            F.softplus(self.alpha_head(feat)) + self.config.alpha_min,
+            self.config.alpha_min, self.config.alpha_max,
+        )
+        beta = torch.clamp(
+            F.softplus(self.beta_head(feat)) + self.config.beta_min,
+            self.config.beta_min, self.config.beta_max,
+        )
+        alpha = torch.nan_to_num(alpha, nan=self.config.alpha_min)
+        beta  = torch.nan_to_num(beta,  nan=self.config.beta_min)
+
+        action_clamped = torch.clamp(action, 1e-6, 1.0 - 1e-6)
+        log_prob = torch.distributions.Beta(alpha, beta).log_prob(action_clamped)
+        # Sum across action dimensions when action_dim > 1 (no-op for action_dim=1).
+        if log_prob.dim() > 1 and log_prob.shape[-1] > 1:
+            log_prob = log_prob.sum(dim=-1, keepdim=True)
+        return torch.clamp(log_prob, -20.0, 2.0)
+
 
 # =============================================================================
 # Lognormal actor
@@ -306,6 +345,44 @@ class LognormalActor(nn.Module):
         )
 
         return PolicyOutput(action=action, mu=mu, sigma=sigma)
+
+    def get_log_prob(
+        self,
+        state:  torch.Tensor,
+        action: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Log probability log π(a|s) of a given action under the LogNormal policy.
+
+        Inversion:  z = log(a + log_epsilon)
+        log p(a) = Normal(μ, σ).log_prob(z) − z      (change-of-variables Jacobian,
+                                                        since da/dz = exp(z) = a + ε)
+
+        Parameters
+        ----------
+        state  : (batch, state_dim) — normalised state.
+        action : (batch, action_dim) — action to evaluate.
+
+        Returns
+        -------
+        torch.Tensor of shape (batch, 1), clamped to (−20, 2).
+        """
+        feat  = self.encoder(state)
+        mu    = self.mu_head(feat)
+        sigma = F.softplus(self.sigma_head(feat)) + self.config.sigma_min
+
+        # Invert: z = log(a + log_epsilon).  Clamp action to avoid log(≤0).
+        action_safe = torch.clamp(action, min=1e-6)
+        z = torch.log(action_safe + self.config.log_epsilon)
+
+        log_prob_normal = torch.distributions.Normal(mu, sigma).log_prob(z)
+        if log_prob_normal.dim() > 1 and log_prob_normal.shape[-1] > 1:
+            log_prob_normal = log_prob_normal.sum(dim=-1, keepdim=True)
+
+        # Jacobian correction: subtract log|da/dz| = z
+        jacobian = z.sum(dim=-1, keepdim=True) if (z.dim() > 1 and z.shape[-1] > 1) else z
+        log_prob = log_prob_normal - jacobian
+        return torch.clamp(log_prob, -20.0, 2.0)
 
 
 # =============================================================================
@@ -409,6 +486,54 @@ class HardgatingActor(nn.Module):
         action = gate * continuous
         return PolicyOutput(action=action, alpha=alpha, beta=beta, gate_prob=gate_prob)
 
+    def get_log_prob(
+        self,
+        state:  torch.Tensor,
+        action: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Log probability log π(a|s) for the Bernoulli-gate × Beta mixture.
+
+        log π(a|s) = log(1 − gate_prob)                  if a < 0.01  (zero release)
+                   = log(gate_prob) + Beta(α,β).log_prob(a)  otherwise
+
+        Parameters
+        ----------
+        state  : (batch, state_dim) — normalised state.
+        action : (batch, action_dim) — action to evaluate.
+
+        Returns
+        -------
+        torch.Tensor of shape (batch, 1), clamped to (−20, 2).
+        """
+        feat      = self.encoder(state)
+        gate_prob = torch.clamp(torch.sigmoid(self.gate_head(feat)), 0.01, 0.99)
+        alpha     = torch.clamp(
+            F.softplus(self.alpha_head(feat)) + self.config.alpha_min,
+            self.config.alpha_min, self.config.alpha_max,
+        )
+        beta = torch.clamp(
+            F.softplus(self.beta_head(feat)) + self.config.beta_min,
+            self.config.beta_min, self.config.beta_max,
+        )
+        alpha = torch.nan_to_num(alpha, nan=self.config.alpha_min)
+        beta  = torch.nan_to_num(beta,  nan=self.config.beta_min)
+
+        is_zero          = (action < 0.01).float()
+        log_prob_zero    = torch.log(1.0 - gate_prob + 1e-8)
+        action_clamped   = torch.clamp(action, 0.01, 0.99)
+        log_prob_nonzero = (
+            torch.log(gate_prob + 1e-8)
+            + torch.distributions.Beta(alpha, beta).log_prob(action_clamped).sum(dim=-1, keepdim=True)
+        )
+        # Guard: NaN in log_prob_nonzero (Beta boundary edge-case or early training
+        # instability) must not propagate via soft-masking — in PyTorch, 0 * NaN = NaN.
+        # torch.where selects values directly without multiplication, so NaN in the
+        # unselected branch cannot corrupt the selected result.
+        log_prob_nonzero = torch.nan_to_num(log_prob_nonzero, nan=-20.0)
+        log_prob = torch.where(is_zero.bool(), log_prob_zero, log_prob_nonzero)
+        return torch.clamp(log_prob, -20.0, 2.0)
+
 
 # =============================================================================
 # Softgating actor
@@ -500,6 +625,51 @@ class SoftgatingActor(nn.Module):
 
         action = gate * continuous
         return PolicyOutput(action=action, alpha=alpha, beta=beta, gate_prob=gate_prob)
+
+    def get_log_prob(
+        self,
+        state:  torch.Tensor,
+        action: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Log probability log π(a|s) for the soft-gate × Beta product.
+
+        The action is a = gate × beta_sample, so the beta_sample is recovered as
+        beta_sample = a / gate.  Then:
+            log π(a|s) = log(gate) + Beta(α,β).log_prob(a / gate)
+
+        Parameters
+        ----------
+        state  : (batch, state_dim) — normalised state.
+        action : (batch, action_dim) — action to evaluate.
+
+        Returns
+        -------
+        torch.Tensor of shape (batch, 1), clamped to (−20, 2).
+        """
+        feat      = self.encoder(state)
+        gate_prob = torch.clamp(torch.sigmoid(self.gate_head(feat)), 0.01, 0.99)
+        alpha     = torch.clamp(
+            F.softplus(self.alpha_head(feat)) + self.config.alpha_min,
+            self.config.alpha_min, self.config.alpha_max,
+        )
+        beta = torch.clamp(
+            F.softplus(self.beta_head(feat)) + self.config.beta_min,
+            self.config.beta_min, self.config.beta_max,
+        )
+        alpha = torch.nan_to_num(alpha, nan=self.config.alpha_min)
+        beta  = torch.nan_to_num(beta,  nan=self.config.beta_min)
+
+        # Invert gate multiplication to recover the Beta component.
+        beta_sample = action / (gate_prob + 1e-8)
+        beta_sample = torch.clamp(beta_sample, 0.01, 0.99)
+
+        log_prob = (
+            torch.log(gate_prob + 1e-8)
+            + torch.distributions.Beta(alpha, beta).log_prob(beta_sample).sum(dim=-1, keepdim=True)
+        )
+        log_prob = torch.nan_to_num(log_prob, nan=-20.0)
+        return torch.clamp(log_prob, -20.0, 2.0)
 
 
 # =============================================================================
