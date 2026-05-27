@@ -31,8 +31,8 @@
 #   null means fall back to optuna.n_jobs below.
 # --------------------------------------------------------------------------
 runtime:
-  device:      auto
-  num_workers: ~     # null: falls back to optuna.n_jobs
+  device: cpu
+  num_workers: 1     # null: falls back to optuna.n_jobs
 
 # --------------------------------------------------------------------------
 # Optuna study settings
@@ -41,8 +41,8 @@ runtime:
 # n_jobs: used only when runtime.num_workers is null.
 # --------------------------------------------------------------------------
 optuna:
-  n_trials: 2000
-  n_jobs:   20
+  n_trials: 2
+  n_jobs: 20
 
 # --------------------------------------------------------------------------
 # Hyperparameter search space
@@ -58,7 +58,7 @@ search_space:
 
   # Critic network — twin Q-network, trained from scratch
   # (actor architecture is fixed from BC and is NOT tuned here)
-  critic_hidden_dim:      [64, 128, 256, 512]
+  critic_hidden_dim: [64, 128, 256, 512]
   critic_n_hidden_layers: {low: 2, high: 5, type: int}
 
   # Training schedule
@@ -66,12 +66,12 @@ search_space:
   #                        (actor weights frozen; lets critic stabilize first)
   # n_epochs:              total joint training epochs
   critic_warm_up_epochs: [50, 100, 150, 200]
-  n_epochs:              [200, 250, 300, 350, 400, 450, 500]
+  n_epochs: [200, 250, 300, 350, 400, 450, 500]
 
   # Learning rates
   # lr_actor:  keep small — actor is initialized from BC, avoid large updates
   # lr_critic: critic trains from scratch and can tolerate a larger LR
-  lr_actor:  {low: 1.0e-5, high: 1.0e-3, log: true}
+  lr_actor: {low: 1.0e-5, high: 1.0e-3, log: true}
   lr_critic: {low: 1.0e-5, high: 1.0e-3, log: true}
 
   # IQ-Learn specific parameters
@@ -81,8 +81,8 @@ search_space:
   # alpha_regularization: chi-squared regularization weight in IQ-Learn loss
   # lambda_bc:           KL penalty weight anchoring actor to BC prior
   #                      (0.0 = no BC regularization; 1.0 = strong anchoring)
-  gamma:                [0.90, 0.95, 0.99]
-  tau:                  {low: 0.001, high: 0.01, log: true}
-  alpha_entropy:        {low: 0.01, high: 1.0, log: true}
+  gamma: [0.90, 0.95, 0.99]
+  tau: {low: 0.001, high: 0.01, log: true}
+  alpha_entropy: {low: 0.01, high: 1.0, log: true}
   alpha_regularization: {low: 0.01, high: 1.0, log: true}
-  lambda_bc:            {low: 0.0, high: 1.0}
+  lambda_bc: {low: 0.0, high: 1.0}
