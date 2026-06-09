@@ -4,8 +4,10 @@
 > AIRL and Deep MaxEnt are under development: the interfaces shown for them below are the *planned*
 > target API and are not yet functional.
 
-A research codebase for learning reservoir release policies from historical operating records using
-Inverse Reinforcement Learning (IRL), benchmarking several algorithms across nine U.S. reservoirs.
+A research codebase for decoding reservoir operators decision-making and learning release policies 
+from historical operating records using Inverse Reinforcement Learning (IRL).
+
+Article currently under review @ Water Resources Research
 
 ---
 
