@@ -8,10 +8,9 @@ Pipeline (runs once before any algorithm):
     1. Load CSV and validate all required columns.
     2. Split chronologically into train / val / test by calendar year.
     3. Compute min-max normalization bounds from the TRAINING split only.
-    4. Write bounds back to the reservoir YAML (comments preserved via ruamel.yaml).
-    5. Normalize all three splits using the training bounds.
-    6. Optionally append sin/cos month encoding to state vectors.
-    7. Build next_state and done arrays (required by AIRL).
+    4. Normalize all three splits using the training bounds.
+    5. Optionally append sin/cos month encoding to state vectors.
+    6. Build next_state and done arrays (required by AIRL).
 
 Normalization note
 ------------------

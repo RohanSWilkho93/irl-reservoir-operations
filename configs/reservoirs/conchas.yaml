@@ -9,12 +9,9 @@
 # --------------------------------------------------------------------------
 # CLI-configurable settings
 # Pass these flags on first run — values are written back here for reproducibility.
-#
-# Flags accepted by all four algorithm scripts:
 #   --data_path          /path/to/data.csv
 #   --state_variables    col1 col2 ...
 #   --use_month_encoding true|false
-#   --policy_network     beta|lognormal|hardgating|softgating
 #   --split_train        <int>
 #   --split_val          <int>
 #   --split_test         <int>
@@ -29,12 +26,8 @@ columns:
   - net_inflow
   action: release
   use_month_encoding: true
-
-# Policy network type for this reservoir.
-# Options : beta | lognormal | hardgating | softgating
-# Rule    : zero releases present → hardgating or softgating
-#           releases always > 0   → beta or lognormal
-policy_network: softgating
+  storage: storage
+  inflow: net_inflow
 
 # Train / validation / test split (in years, chronological order).
 split:
@@ -45,6 +38,15 @@ split:
 # Normalization bounds — auto-computed from the training split on first run
 # and written back here. Applied unchanged to val and test.
 reservoir:
+  # bounds: written automatically by data.py from the training split on first run — do not pre-fill
+  mass_balance:
+    seconds_per_day: 86400
+    volume_factor: 1.0e+6
+    max_storage:             # null -> bounds.storage.max
+    min_storage:             # null -> bounds.storage.min
+    max_release:             # null -> bounds.release.max
+    min_release:             # null -> bounds.release.min
+
   bounds:
     storage:
       min: 88.13

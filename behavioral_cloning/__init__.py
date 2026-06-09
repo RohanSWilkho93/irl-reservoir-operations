@@ -1,1 +1,0 @@
-# behavioral_cloning package

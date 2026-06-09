@@ -1,448 +1,237 @@
-# IRL Reservoir Operations
+# IRL for Reservoir Operations
 
-THIS REPOSITORY IS STILL UNDER DEVELOPMENT
+> **Status — under active development.** **IQ-Learn is the only end-to-end runnable pipeline today.**
+> AIRL and Deep MaxEnt are under development: the interfaces shown for them below are the *planned*
+> target API and are not yet functional.
 
-A research codebase for learning reservoir release policies from historical operational data using Inverse Reinforcement Learning (IRL). Four algorithms are implemented and benchmarked against each other across nine U.S. reservoirs.
+A research codebase for learning reservoir release policies from historical operating records using
+Inverse Reinforcement Learning (IRL), benchmarking several algorithms across nine U.S. reservoirs.
+
+---
+
+## Status
+
+| Algorithm | Status | Entry point |
+|---|---|---|
+| **IQ-Learn** | **Ready** — train **and** figures in one command | `iqlearn/run.py` |
+| **AIRL** | **Under development** | `airl/` *(planned)* |
+| **Deep MaxEnt** | **Under development** | `deepmaxent/` *(planned)* |
+
+This README documents the **ready** IQ-Learn pipeline in full and sketches the planned interface for
+the under-development algorithms. For the complete IQ-Learn reference (file-by-file, all flags and
+outputs) see **`iqlearn/README.md`**.
 
 ---
 
 ## Algorithms
 
-| Algorithm | Type | Key idea |
-|---|---|---|
-| **Behavioral Cloning (BC)** | Imitation learning baseline | Supervised regression: directly mimic historical release decisions |
-| **Deep MaxEnt IRL** | IRL | Learn a reward function maximizing the entropy of the demonstrated policy |
-| **AIRL** | IRL + RL | Adversarial training: discriminator learns a reward function; PPO optimizes the policy against it |
-| **IQ-Learn** | Offline IRL | Batch-based; learns a Q-function directly from expert data without environment rollouts |
+| Algorithm | Type | Key idea | Status |
+|---|---|---|---|
+| **IQ-Learn** | Offline IRL | Categorical policy over discretized releases + a twin Q-network learned directly from expert data; no environment rollouts in the loss | **Ready** |
+| **Deep MaxEnt IRL** | IRL | Learn a reward maximizing the entropy of the demonstrated policy | Under development |
+| **AIRL** | IRL + RL | Adversarial reward (discriminator) + PPO policy optimization | Under development |
 
-> **Dependency**: AIRL and IQ-Learn both initialize their actor from a pretrained BC checkpoint. BC must be run first for any reservoir before AIRL or IQ-Learn can be tuned or trained.
+> The runnable **IQ-Learn** pipeline runs Bheavioral Cloning automatically as its first stage and warm-starts IQ from
+> it — you do **not** run BC separately or pass a BC run id. The BC-first dependency in the original
+> design applies only to the under-development AIRL path.
 
 ---
 
-## Repository Layout
+## Repository layout
 
 ```
 irl-reservoir-operations/
 │
+├── iqlearn/                     # ── READY ── (see iqlearn/README.md)
+│   ├── run.py                   # driver: BC ─► IQ ─► figures (one command)
+│   ├── bc_tuning.py             # Stage 1: behavioral-cloning tuning (Optuna)
+│   ├── iq_tuning.py             # Stage 2: IQ-Learn tuning (Optuna)
+│   ├── results.py               # Stage 3: figures (auto-run; also standalone)
+│   ├── agent.py                 # IQLearnAgent (actor + twin critic + target)
+│   ├── loss.py                  # categorical IQ-Learn loss
+│   ├── environment.py           # mass-balance closed-loop rollout
+│   ├── expert_buffer.py         # in-memory expert transition buffer
+│   ├── hyperparameter_metrics.py# trial scoring (rollout fidelity: r, nRMSE)
+│   ├── networks/
+│   │   ├── policy.py            # CategoricalPolicy (state ─► release-bin logits)
+│   │   └── critic.py            # TwinCritic  Q(state, release)
+│   └── utils/
+│       ├── bc_binning.py        # release discretization (bin edges/means)
+│       ├── distribution.py      # categorical-action math (probs, sample, soft-value)
+│       └── runs.py              # run-folder / device / YAML write-back plumbing
+│
+├── airl/                        # ── UNDER DEVELOPMENT ── (planned: tune/train/generate_results + core.py)
+├── deepmaxent/                  # ── UNDER DEVELOPMENT ── (planned: tune/train/generate_results + core.py)
+│
 ├── configs/
-│   ├── algorithms/          # Hyperparameter search spaces (one YAML per algorithm)
-│   │   ├── behavioral_cloning.yaml
-│   │   ├── airl.yaml
-│   │   ├── iqlearn.yaml
-│   │   └── deepmaxent.yaml
-│   └── reservoirs/          # Per-reservoir settings (data path, columns, splits, bounds)
+│   ├── algorithms/              # one YAML per algorithm (search spaces, runtime, scoring)
+│   │   ├── iqlearn.yaml         #   bc_tuning + iq_tuning blocks   (READY)
+│   │   ├── airl.yaml            #   (under development)
+│   │   └── deepmaxent.yaml      #   (under development)
+│   └── reservoirs/              # per-reservoir settings (data path, columns, splits, bounds, physics)
 │       ├── conchas.yaml
+│       ├── cottage_grove.yaml
+│       ├── dexter.cyamlsv
+│       ├── englebright.yaml
+│       ├── fern_ridge.yaml
 │       ├── garrison.yaml
-│       └── ...              # one file per reservoir
+│       ├── libby.yaml
+│       ├── stockton.yaml
+│       └── walter_geroge.yaml   
 │
-├── data/                    # Raw CSV files (one per reservoir)
+├── data/                        # raw CSV files (one per reservoir)
 │   ├── conchas.csv
-│   └── ...
+│   ├── cottage_grove.csv
+│   ├── dexter.csv
+│   ├── englebright.csv
+│   ├── fern_ridge.csv
+│   ├── garrison.csv
+│   ├── libby.csv
+│   ├── stockton.csv
+│   └── walter_geroge.csv               
 │
-├── networks/                # Shared PyTorch network definitions
-│   ├── policy.py            # Factory: build_policy_network(type, config)
-│   ├── airl.py              # AIRLDiscriminator (reward net + shaping net + critic)
-│   ├── iqlearn.py           # IQCriticNetwork (twin Q-network)
-│   └── reward_deepmax.py    # Reward network for Deep MaxEnt
+├── utils/                       # shared helpers
+│   ├── data.py                  # load_reservoir_data() → DataSplits (read, normalize, split)
+│   └── metrics.py               # nrmse(), safe_pearsonr()
 │
-├── utils/
-│   ├── data.py              # load_reservoir_data() → DataSplits
-│   ├── metrics.py           # nrmse(), safe_pearsonr()
-│   └── runs.py              # _find_run_folder() — locates run folders by run_id
-│
-├── behavioral_cloning/
-│   ├── tune.py              # Optuna search → best_config.json
-│   ├── train.py             # Final training run → model.pt
-│   └── generate_results.py  # Evaluation + plots
-│
-├── airl/
-│   ├── tune.py
-│   ├── train.py
-│   ├── generate_results.py
-│   └── core.py              # AIRLConfig, AIRLAgent, ReservoirEnvironment
-│
-├── iqlearn/
-│   ├── tune.py
-│   ├── train.py
-│   ├── generate_results.py
-│   └── core.py              # IQLearnConfig, IQLearnAgent, ExpertBuffer
-│
-├── deepmaxent/
-│   ├── tune.py
-│   ├── train.py
-│   ├── generate_results.py
-│   └── core.py
-│
-└── results/                 # All outputs land here (auto-created)
+└── results/                     # all outputs land here (auto-created)
     └── <reservoir>/
-        ├── behavioral_cloning/<run_id>_<policy_type>/
-        ├── airl/<run_id>_<policy_type>/
-        ├── iqlearn/<run_id>_<policy_type>/
-        └── deepmaxent/<run_id>/
+        ├── iqlearn/<run_id>/        # READY — bare-integer run folders
+        ├── airl/<run_id>_<policy>/  # planned
+        └── deepmaxent/<run_id>/     # planned
 ```
 
----
-
-## Policy Network Types
-
-All algorithms except Deep MaxEnt share the same four actor distributions.
-
-| Type | Use when | Notes |
-|---|---|---|
-| `beta` | Releases always > 0 | Bounded [0,1] output after normalization |
-| `lognormal` | Releases always > 0 | Heavy right tail; good for skewed distributions |
-| `hardgating` | Zero releases present | Hard gate: samples zero with learned probability, otherwise Beta |
-| `softgating` | Zero releases present | Soft gate: weighted mixture with learnable MSE + gate losses |
-
-Check the data for zeros before choosing. For Conchas (flood control), `hardgating` or `softgating` is appropriate.
+> Run everything **from the repository root**.
 
 ---
 
-## Reservoir Config
+## IQ-Learn — quick start (ready)
 
-Each `configs/reservoirs/<name>.yaml` controls everything about a reservoir run:
+A single command loads the data once, tunes BC (Stage 1), warm-starts and tunes IQ-Learn (Stage 2),
+and renders all figures (Stage 3):
+
+```bash
+python iqlearn/run.py \
+    --reservoir garrison \
+    --data_path data/garrison.csv \
+    --state_variables storage net_inflow \
+    --use_month_encoding true \
+    --split_train 14 --split_val 1 --split_test 3 \
+    --device cpu \
+    --bc_n_trials 1000 --bc_n_jobs 8 \
+    --iq_n_trials 300  --iq_n_jobs 8
+```
+
+Everything lands in `results/<reservoir>/iqlearn/<run_id>/` (the `run_id` is a **bare integer**,
+auto-incremented). Figure generation is defensive — if it fails (e.g. `shap` missing) the trained
+agent is still saved and the run prints the standalone retry command.
+
+Re-render or customize figures for an existing run (defaults to the latest):
+
+```bash
+python iqlearn/results.py --reservoir garrison
+# knobs: --run_id  --n_mc  --grid_size  --shap_split {train,val,test,all}  --shap_nsamples  ...
+```
+
+Notes specific to the ready pipeline:
+- **No `--policy_type`** — IQ-Learn uses a single **categorical** policy over discretized release bins.
+- **No `--bc_run_id`** — BC runs automatically as Stage 1 and is warm-started into IQ in the same folder.
+- Full flag list, per-file descriptions, and output details: **`iqlearn/README.md`**.
+
+---
+
+## Reservoir config (IQ-Learn)
+
+Each `configs/reservoirs/<name>.yaml` controls a reservoir run. The keys IQ-Learn needs:
 
 ```yaml
-data_path: data/conchas.csv
+data_path: data/<reservoir>.csv
 
 columns:
-  date: date
-  state: [storage, net_inflow]   # state variables fed into the policy
+  date:  date
+  state: [storage, net_inflow]    # state variables fed to the policy
   action: release
-  use_month_encoding: true        # appends sin/cos(month) to state → state_dim = 4
+  use_month_encoding: true        # appends sin/cos(2π·month/12) → state_dim = 4
+  storage: storage                # physics role: mass-balance state  (must be in `state`)
+  inflow:  net_inflow             # physics role: exogenous inflow forcing (must be in `state`)
 
-split:
-  train: 14   # years
+split:                            # years
+  train: 14
   val:   1
   test:  3
 
 reservoir:
-  bounds:                         # auto-filled on first run from training data
-    storage:   {min: 88.13,  max: 393.985}
-    net_inflow:{min: -8.68,  max: 104.48}
-    release:   {min: 0.0,    max: 19.567}
+  bounds:                         # auto-filled on first run from the TRAIN split (normalization source)
+    storage:    {min: 88.13, max: 393.985}
+    net_inflow: {min: -8.68, max: 104.48}
+    release:    {min: 0.0,   max: 19.567}
+  mass_balance:                   # physical clamp/spill + unit conversion (closed-loop simulation)
+    seconds_per_day: 86400
+    volume_factor:   1.0e6        # m³ → storage units (Mm³)
+    max_storage: null             # null → bounds.storage.max
+    min_storage: null
+    max_release: null
+    min_release: null
 ```
 
-`use_month_encoding: true` adds `sin(2π·month/12)` and `cos(2π·month/12)` to every state vector, giving the policy seasonal awareness without treating month as a linear feature. With two raw state variables and month encoding, `state_dim = 4`.
+The `storage`/`inflow` roles and the `mass_balance` block are **required by IQ-Learn** (its rollout
+propagates storage by mass balance). `use_month_encoding: true` gives the policy seasonal awareness
+without treating month as a linear feature. Algorithm hyperparameters and Optuna search spaces live in
+`configs/algorithms/iqlearn.yaml` (two blocks: `bc_tuning` and `iq_tuning`). CLI overrides on `run.py`
+are written back to the reservoir YAML, so a later standalone `results.py` reproduces the same run.
 
 ---
 
-## Three-Step Pipeline
+## IQ-Learn outputs
 
-Every algorithm follows the same three steps. Run them in order.
+Everything in `results/<reservoir>/iqlearn/<run_id>/`:
 
-```
-tune.py  →  train.py  →  generate_results.py
-```
+| File | Produced by | Contents |
+|---|---|---|
+| `bc_policy.pt` | BC (Stage 1) | warm-start policy weights |
+| `iq_agent.pt` | IQ (Stage 2) | final agent (actor + twin critic + target) |
+| `iq_best_config.json` | IQ | best hyperparameters + **resolved mass-balance** + seed |
+| `iq_run_args.json` | IQ | run arguments (provenance) |
+| `figures/` | Results (Stage 3) | all plots below |
 
----
-
-## Step 1 — Hyperparameter Tuning (`tune.py`)
-
-Runs an Optuna study over the search space defined in `configs/algorithms/<algo>.yaml`. Saves the best trial's hyperparameters to `results/<reservoir>/<algo>/<run_id>_<policy_type>/best_config.json`.
-
-### Behavioral Cloning
-
-```bash
-python behavioral_cloning/tune.py \
-    --reservoir conchas \
-    --policy_type hardgating \
-    --device cpu \
-    --num_workers 1 \
-    --n_trials 50 \
-    --run_id 1
-```
-
-### AIRL
-
-AIRL reads its BC checkpoint automatically from `results/<reservoir>/behavioral_cloning/`. You must specify which BC run to use with `--bc_run_id`.
-
-```bash
-python airl/tune.py \
-    --reservoir conchas \
-    --policy_type hardgating \
-    --bc_run_id 1 \
-    --device cpu \
-    --num_workers 1 \
-    --n_trials 100 \
-    --run_id 1
-```
-
-### IQ-Learn
-
-Same pattern as AIRL — requires a completed BC run.
-
-```bash
-python iqlearn/tune.py \
-    --reservoir conchas \
-    --policy_type hardgating \
-    --bc_run_id 1 \
-    --device cpu \
-    --num_workers 1 \
-    --n_trials 100 \
-    --run_id 1
-```
-
-Optional: override month encoding (writes back to the reservoir YAML):
-
-```bash
-python iqlearn/tune.py ... --use_month_encoding true
-```
-
-### Deep MaxEnt
-
-Deep MaxEnt does not use a policy type — the folder is named `<run_id>/` instead of `<run_id>_<policy_type>/`.
-
-```bash
-python deepmaxent/tune.py \
-    --reservoir conchas \
-    --device cpu \
-    --num_workers 1 \
-    --n_trials 50 \
-    --run_id 1
-```
-
-**Key `tune.py` arguments**
-
-| Argument | Description |
-|---|---|
-| `--reservoir` | Must match a file in `configs/reservoirs/` |
-| `--policy_type` | `beta`, `lognormal`, `hardgating`, or `softgating` |
-| `--bc_run_id` | (AIRL/IQ-Learn only) Run ID of the BC run to use as actor initialization |
-| `--run_id` | Integer ID for this tuning run; auto-increments if omitted |
-| `--n_trials` | Number of Optuna trials |
-| `--num_workers` | Parallel trial workers (set to match available CPU cores) |
-| `--device` | `cpu`, `cuda`, `cuda:0`, `mps`, or `auto` |
-
----
-
-## Step 2 — Final Training (`train.py`)
-
-Reads `best_config.json` from the run folder, trains a single full model with those hyperparameters, and saves the checkpoint.
-
-### Behavioral Cloning
-
-```bash
-python behavioral_cloning/train.py \
-    --reservoir conchas \
-    --policy_type hardgating \
-    --run_id 1 \
-    --device cpu
-```
-
-### AIRL
-
-```bash
-python airl/train.py \
-    --reservoir conchas \
-    --policy_type hardgating \
-    --run_id 1 \
-    --device cpu
-```
-
-### IQ-Learn
-
-```bash
-python iqlearn/train.py \
-    --reservoir conchas \
-    --policy_type hardgating \
-    --run_id 1 \
-    --device cpu
-```
-
-### Deep MaxEnt
-
-```bash
-python deepmaxent/train.py \
-    --reservoir conchas \
-    --run_id 1 \
-    --device cpu
-```
-
-**Key `train.py` arguments**
-
-| Argument | Description |
-|---|---|
-| `--reservoir` | Reservoir name |
-| `--policy_type` | Can be omitted — inferred from the run folder name |
-| `--run_id` | Must match an existing folder created by `tune.py` |
-| `--device` | Override the device stored in `best_config.json` |
-| `--seed` | Override the seed (use to train ensemble members) |
-| `--verbose` | Print per-epoch progress |
-
-**Outputs written to `results/<reservoir>/<algo>/<run_id>_<policy_type>/`:**
-
-| File | Contents |
-|---|---|
-| `model.pt` | Full checkpoint: network weights + config + metadata |
-| `train_log.json` | Per-eval training history, best val score and epoch |
-| `run_args.json` | Updated with this run's CLI arguments |
-
----
-
-## Step 3 — Evaluation and Figures (`generate_results.py`)
-
-Loads `model.pt`, runs Monte Carlo rollouts on the held-out test split, computes metrics, and saves all publication figures. Must be run after `train.py`.
-
-### Behavioral Cloning
-
-```bash
-python behavioral_cloning/generate_results.py \
-    --reservoir conchas \
-    --policy_type hardgating \
-    --run_id 1 \
-    --device cpu
-```
-
-### AIRL
-
-```bash
-python airl/generate_results.py \
-    --reservoir conchas \
-    --policy_type hardgating \
-    --run_id 1 \
-    --device cpu \
-    --n_mc 500
-```
-
-### IQ-Learn
-
-```bash
-python iqlearn/generate_results.py \
-    --reservoir conchas \
-    --policy_type hardgating \
-    --run_id 1 \
-    --device cpu \
-    --n_mc 100
-```
-
-Skip SHAP for a quick diagnostic run:
-
-```bash
-python iqlearn/generate_results.py \
-    --reservoir conchas --policy_type hardgating --run_id 1 \
-    --device cpu --skip_shap
-```
-
-### Deep MaxEnt
-
-```bash
-python deepmaxent/generate_results.py \
-    --reservoir conchas \
-    --run_id 1 \
-    --device cpu
-```
-
-**Key `generate_results.py` arguments**
-
-| Argument | Description |
-|---|---|
-| `--n_mc` | Number of stochastic Monte Carlo rollouts (default 100 for IQ-Learn, 500 for AIRL) |
-| `--shap_background` | Training samples used as SHAP background (default 100) |
-| `--shap_test_size` | Test samples explained by SHAP (default 300) |
-| `--skip_shap` | Skip all SHAP computation |
-
-**Outputs (AIRL and IQ-Learn):**
+**Figures** (`figures/`):
 
 | File | Description |
 |---|---|
-| `test_metrics.json` | Pearson r and nRMSE for release and storage across MC rollouts |
-| `release_test.png` | Observed vs. MC median + IQR band (time series) |
-| `storage_test.png` | Same for storage |
-| `scatter_release.png` | Observed vs. simulated scatter + 1:1 line (release) |
-| `scatter_storage.png` | Same for storage |
-| `training_curves.png` | Loss and validation score history |
-| `reward_contours.png` / `reward_contour.png` | Learned reward/Q-function contour grid |
-| `shap_policy_total.png` | Mean \|SHAP\| per feature — policy network |
-| `shap_policy_monthly.png` | Monthly SHAP heatmap — policy (sin/cos month excluded) |
-| `shap_qnetwork_total.png` | Mean \|SHAP\| per feature — Q-network (IQ-Learn only) |
-| `shap_qnetwork_monthly.png` | Monthly SHAP heatmap — Q-network (IQ-Learn only) |
-| `shap_reward_total.png` | Mean \|SHAP\| per feature — reward network (AIRL only) |
-| `shap_reward_monthly.png` | Monthly SHAP heatmap — reward network (AIRL only) |
+| `reward_contours.png` | **Reward contour** — learned `min(Q₁, Q₂)` over a storage × release grid, all observations overlaid (one panel per month with month encoding) |
+| `mc_fan_test.png` / `mc_fan_full.png` | Monte-Carlo rollout fans (storage + release): observed vs. median + 25–75% IQR, titled with *r* and nRMSE — **Test data** and **All data** |
+| `shap_policy_overall.png` / `shap_critic_overall.png` | global mean\|SHAP\| per feature (policy = state; critic = state **+** release) |
+| `shap_policy_monthly.png` / `shap_critic_monthly.png` | per-month SHAP heatmaps (seasonal sin/cos rows dropped, rest renormalized to 100%/month) |
 
 ---
 
-## Complete Example: Conchas, IQ-Learn, `hardgating`
+## Under development: AIRL & Deep MaxEnt
+
+These follow the planned three-step interface and are **not yet runnable** — the commands below are the
+target API. Per-algorithm folders use `<run_id>_<policy_type>` run folders (Deep MaxEnt uses `<run_id>`
+only, no policy type), and AIRL's planned flow warm-starts from a BC checkpoint via `--bc_run_id`.
+
+```
+tune.py  →  train.py  →  generate_results.py        # planned, per algorithm
+```
 
 ```bash
-# 1. Tune BC (actor architecture)
-python behavioral_cloning/tune.py \
-    --reservoir conchas --policy_type hardgating \
-    --device cpu --num_workers 4 --n_trials 50 --run_id 1
+# AIRL (planned)
+python airl/tune.py  --reservoir conchas --policy_type hardgating --bc_run_id 1 \
+    --device cpu --num_workers 4 --n_trials 100 --run_id 1
+python airl/train.py --reservoir conchas --policy_type hardgating --run_id 1 --device cpu
+python airl/generate_results.py --reservoir conchas --policy_type hardgating --run_id 1 \
+    --device cpu --n_mc 500
 
-# 2. Train BC
-python behavioral_cloning/train.py \
-    --reservoir conchas --policy_type hardgating --run_id 1 --device cpu
-
-# 3. Tune IQ-Learn
-python iqlearn/tune.py \
-    --reservoir conchas --policy_type hardgating \
-    --bc_run_id 1 --device cpu --num_workers 4 --n_trials 100 --run_id 1
-
-# 4. Train IQ-Learn
-python iqlearn/train.py \
-    --reservoir conchas --policy_type hardgating --run_id 1 --device cpu
-
-# 5. Generate results
-python iqlearn/generate_results.py \
-    --reservoir conchas --policy_type hardgating --run_id 1 --device cpu
+# Deep MaxEnt (planned)
+python deepmaxent/tune.py  --reservoir conchas --device cpu --n_trials 50 --run_id 1
+python deepmaxent/train.py --reservoir conchas --run_id 1 --device cpu
+python deepmaxent/generate_results.py --reservoir conchas --run_id 1 --device cpu
 ```
 
----
-
-## Complete Example: Conchas, AIRL, `hardgating`
-
-```bash
-# BC steps 1–2 are shared with the example above.
-
-# 3. Tune AIRL
-python airl/tune.py \
-    --reservoir conchas --policy_type hardgating \
-    --bc_run_id 1 --device cpu --num_workers 4 --n_trials 100 --run_id 1
-
-# 4. Train AIRL
-python airl/train.py \
-    --reservoir conchas --policy_type hardgating --run_id 1 --device cpu
-
-# 5. Generate results
-python airl/generate_results.py \
-    --reservoir conchas --policy_type hardgating --run_id 1 --device cpu --n_mc 500
-```
-
----
-
-## Results Folder Structure
-
-```
-results/
-└── conchas/
-    ├── behavioral_cloning/
-    │   └── 1_hardgating/
-    │       ├── best_config.json
-    │       ├── model.pt
-    │       └── train_log.json
-    ├── airl/
-    │   └── 1_hardgating/
-    │       ├── best_config.json
-    │       ├── model.pt
-    │       ├── train_log.json
-    │       ├── test_metrics.json
-    │       └── *.png
-    ├── iqlearn/
-    │   └── 1_hardgating/
-    │       ├── best_config.json
-    │       ├── model.pt
-    │       ├── train_log.json
-    │       ├── test_metrics.json
-    │       └── *.png
-    └── deepmaxent/
-        └── 1/
-            ├── best_config.json
-            ├── model.pt
-            └── *.png
-```
-
-Run folder names follow the convention `<run_id>_<policy_type>` (e.g., `1_hardgating`, `2_lognormal`). Deep MaxEnt uses `<run_id>` only (no policy type). The `run_id` auto-increments if `--run_id` is not passed to `tune.py`, so you can run multiple searches side by side without collisions.
+Planned per-algorithm outputs include `best_config.json`, `model.pt`, `train_log.json`,
+`test_metrics.json`, time-series/scatter PNGs, reward contours, and SHAP figures (the reward network
+for AIRL). These will be documented here as each algorithm lands.
 
 ---
 
@@ -462,8 +251,13 @@ Run folder names follow the convention `<run_id>_<policy_type>` (e.g., `1_hardga
 
 ---
 
-## Adding a New Reservoir
+## Adding a new reservoir
 
-1. Add a CSV to `data/` with at minimum `date`, a storage column, an inflow column, and a release column.
-2. Copy an existing YAML from `configs/reservoirs/` and update `data_path`, `columns`, and `split`.
-3. Run the pipeline as shown above. Normalization bounds are computed automatically from the training split and written back to the YAML on first run.
+1. Add a CSV to `data/` with at least a `date` column, a storage column, an inflow column, and a
+   release column.
+2. Copy an existing `configs/reservoirs/<name>.yaml` and update `data_path`, `columns` (including the
+   `storage` / `inflow` physics roles), and `split`. For IQ-Learn, also set `reservoir.mass_balance`
+   (or leave the bounds-derived defaults as `null`).
+3. Run the IQ-Learn pipeline as shown above. Normalization `bounds` are computed from the training
+   split and written back to the YAML on the first run.
+```
