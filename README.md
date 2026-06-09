@@ -239,15 +239,15 @@ for AIRL). These will be documented here as each algorithm lands.
 
 | Name | File | Notes |
 |---|---|---|
-| Conchas | `conchas.yaml` | Flood control + irrigation; zero releases present |
-| Garrison | `garrison.yaml` | |
-| Libby | `libby.yaml` | |
-| Englebright | `englebright.yaml` | |
-| Cottage Grove | `cottage_grove.yaml` | |
-| Fern Ridge | `fern_ridge.yaml` | |
-| Dexter | `dexter.yaml` | |
-| Stockton | `stockton.yaml` | |
-| Walter George | `walter_george.yaml` | |
+| Conchas | `conchas.yaml` | Flood control + irrigation |
+| Garrison | `garrison.yaml` | Flood Control + navigation + hydroelectric + water supply + irrigation |
+| Libby | `libby.yaml` | Flood Control + hydroelectric |
+| Englebright | `englebright.yaml` | Hydroelectric + recreation |
+| Cottage Grove | `cottage_grove.yaml` | Flood Control + irrigation |
+| Fern Ridge | `fern_ridge.yaml` | Flood Control + irrigation |
+| Dexter | `dexter.yaml` | Hydroelectric + recreation |
+| Stockton | `stockton.yaml` | Flood Control + hydroelectric |
+| Walter George | `walter_george.yaml` | Navigation + hydroelectric |
 
 ---
 
