@@ -1,25 +1,20 @@
 """
-policy.py for AIRL and IQ-Learn
-=========
-The Behavioral Cloning policy network: a quantile-binned/logartihmic-binned categorical head.
+iqlearn/networks/policy.py
+==========================
+The parametric Behavioral-Cloning / IQ-Learn actor.
 
-A plain MLP backbone maps the state to K raw logits, one per release bin.  The
-output is UN-normalised on purpose — the softmax is applied downstream:
-    - training : _compute_loss() uses log_softmax(logits)
-    - decode   : the expected value uses softmax(logits) @ bin_means
-Applying a softmax inside forward() would double-count it, so forward returns
-logits directly.
+A shared MLP backbone maps the state to features; a family-specific set of heads
+(supplied by a PolicyDistribution) maps the features to that family's
+distribution parameters.  The policy is fully determined by `config` —
+(state_dim, hidden_dim, n_hidden_layers, dropout, policy_family, dist_params) —
+so a saved state_dict reloads by rebuilding with the same config (the IQ-Learn
+warm-start relies on this).
 
-Contract (used by tune.py / iqlearn)
------------------------------------
-    model = build_policy_network(config).to(device)
-    logits = model(states)        # states: (B, state_dim)  ->  logits: (B, n_bins)
+The state already contains the optional sin/cos month encoding (utils/data.py
+folds it in), so the actor takes ONLY the state — there is no separate context.
 
-The architecture is fully determined by `config`, so a saved state_dict can be
-reloaded by rebuilding with the same config and calling load_state_dict — which
-is what the IQLearn warm-start relies on.  Because the output layer width is
-n_bins, a checkpoint is K-specific: it only loads into a network built with the
-same n_bins (guaranteed by the frozen n_bins in bc_best_config.json).
+forward(states) returns the distribution's parameter dict; the strategy turns
+those parameters into a sampled / deterministic action, the BC NLL, and the KL.
 """
 
 from __future__ import annotations
@@ -27,44 +22,17 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
+from iqlearn.distributions import make_distribution
 
-# =============================================================================
-# Categorical policy network
-# =============================================================================
 
-class CategoricalPolicy(nn.Module):
-    """
-    MLP backbone + linear head producing K bin logits.
+class ParametricPolicy(nn.Module):
+    """MLP backbone + a PolicyDistribution's parameter heads."""
 
-    Structure
-    ---------
-    state_dim
-        -> [Linear -> ReLU -> Dropout] x n_hidden_layers   (width = hidden_dim)
-        -> Linear(hidden_dim -> n_bins)                     (raw logits)
-
-    Parameters
-    ----------
-    state_dim       : input feature dimension (storage, inflow, sin/cos month, ...).
-    n_bins          : K — number of release bins == output-layer width.
-    hidden_dim      : hidden-layer width.
-    n_hidden_layers : number of hidden layers (>= 1).
-    dropout         : dropout probability applied after each hidden activation
-                      (0.0 -> identity; automatically disabled under .eval()).
-    """
-
-    def __init__(
-        self,
-        state_dim:       int,
-        n_bins:          int,
-        hidden_dim:      int   = 128,
-        n_hidden_layers: int   = 3,
-        dropout:         float = 0.1,
-    ):
+    def __init__(self, state_dim: int, hidden_dim: int, n_hidden_layers: int,
+                 dropout: float, distribution, action_dim: int = 1):
         super().__init__()
         if state_dim < 1:
             raise ValueError(f"state_dim must be >= 1, got {state_dim}.")
-        if n_bins < 1:
-            raise ValueError(f"n_bins must be >= 1, got {n_bins}.")
         if n_hidden_layers < 1:
             raise ValueError(f"n_hidden_layers must be >= 1, got {n_hidden_layers}.")
 
@@ -73,48 +41,40 @@ class CategoricalPolicy(nn.Module):
         for _ in range(n_hidden_layers):
             layers += [nn.Linear(in_dim, hidden_dim), nn.ReLU(), nn.Dropout(dropout)]
             in_dim = hidden_dim
-        layers.append(nn.Linear(hidden_dim, n_bins))   # output head: raw logits
+        self.encoder = nn.Sequential(*layers)
 
-        self.net    = nn.Sequential(*layers)
-        self.n_bins = n_bins
+        self.distribution = distribution                       # math only (no params)
+        self.heads = distribution.make_heads(hidden_dim, action_dim)
+        self._initialize_weights()
 
-    def forward(self, states: torch.Tensor) -> torch.Tensor:
-        """
-        Parameters
-        ----------
-        states : (B, state_dim) float tensor.
+    def _initialize_weights(self) -> None:
+        for m in self.encoder:
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+        self.distribution.init_heads(self.heads)
 
-        Returns
-        -------
-        (B, n_bins) raw logits (NOT softmaxed).
-        """
-        return self.net(states)
+    def forward(self, states: torch.Tensor) -> dict:
+        """states (B, state_dim) -> distribution parameter dict (each (B, action_dim))."""
+        features = self.encoder(states)
+        return self.distribution.params_from_features(features, self.heads)
 
 
-# =============================================================================
-# Factory
-# =============================================================================
-
-def build_policy_network(config) -> CategoricalPolicy:
+def build_policy_network(config) -> ParametricPolicy:
     """
-    Construct the categorical policy from a BCConfig.
+    Construct the actor from a BC/IQ config.
 
-    The returned module is on CPU; the caller moves it to the target device
-    (tune.py does build_policy_network(config).to(device)).
-
-    Parameters
-    ----------
-    config : BCConfig
-        Provides state_dim, n_bins, hidden_dim, n_hidden_layers, dropout.
-
-    Returns
-    -------
-    CategoricalPolicy
+    Reads (duck-typed): state_dim, hidden_dim, n_hidden_layers, dropout,
+    policy_family, dist_params, action_dim (optional, default 1).
     """
-    return CategoricalPolicy(
+    distribution = make_distribution(config.policy_family,
+                                     getattr(config, "dist_params", {}) or {})
+    return ParametricPolicy(
         state_dim       = config.state_dim,
-        n_bins          = config.n_bins,
         hidden_dim      = config.hidden_dim,
         n_hidden_layers = config.n_hidden_layers,
-        dropout         = config.dropout,
+        dropout         = getattr(config, "dropout", 0.0),
+        distribution    = distribution,
+        action_dim      = getattr(config, "action_dim", 1),
     )

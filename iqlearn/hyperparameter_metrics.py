@@ -29,7 +29,6 @@ from typing import Any
 import torch
 
 from utils.metrics import rmse, safe_pearsonr
-from iqlearn.utils import distribution
 
 
 # =============================================================================
@@ -56,11 +55,18 @@ def q_smoothness(agent, states: torch.Tensor, actions: torch.Tensor) -> float:
 
 @torch.no_grad()
 def policy_entropy(agent, states: torch.Tensor) -> float:
-    """Mean categorical entropy normalised to [0, 1] by log K."""
-    logits = agent.actor(states)
-    k = logits.shape[-1]
-    h = distribution.entropy(logits).mean()
-    return float((h / math.log(k)).clamp(0.0, 1.0).item())
+    """
+    Robustness term in [0, 1] from the policy's sampled differential entropy.
+
+    A parametric (continuous) policy has differential entropy, not the bounded
+    categorical entropy, so there is no log-K normaliser.  We estimate
+    H ~= E[-log pi(a|s)] from one sample per state and squash it with the
+    Paper-1 mapping clip((H + 5) / 10, 0, 1): a collapsed policy (very negative
+    H) scores ~0, a healthily spread one scores toward 1.
+    """
+    log_probs = agent.sample_log_prob(states)
+    h = (-log_probs).mean()
+    return float(torch.clamp((h + 5.0) / 10.0, 0.0, 1.0).item())
 
 
 @torch.no_grad()

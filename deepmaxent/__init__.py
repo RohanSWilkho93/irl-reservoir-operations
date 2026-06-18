@@ -1,2 +1,1 @@
-# Deep Maximum Entropy IRL module.
-# See deepmaxent/tune.py, train.py, generate_results.py for entry points.
+"""Deep Maximum-Entropy IRL for reservoir operations (discretized-grid MaxEnt)."""

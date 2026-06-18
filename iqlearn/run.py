@@ -216,9 +216,11 @@ def main() -> None:
     # ---- Summary ----
     print("\n" + "=" * 72)
     print(f"  PIPELINE COMPLETE  \u2014  run_id={run_id}   folder={bc_result['run_folder']}")
+    print(f"  Family : {bc_result['policy_family']}  "
+          f"(candidates: {', '.join(bc_result['candidate_families'])})")
     print(f"  BC : score={bc_result['best_score']:.4f}   \u2192 {bc_result['policy_path'].name}")
     print(f"  IQ : score={iq_result['best_score']:.4f}   \u2192 {iq_result['agent_path'].name}")
-    print(f"  Results \u2192 {bc_result['run_folder']+"\figures"}")
+    print(f"  Results \u2192 {bc_result['run_folder'] / 'figures'}")
     if figures_dir is not None:
         print(f"  Figures            \u2192 {figures_dir}")
     print("=" * 72)

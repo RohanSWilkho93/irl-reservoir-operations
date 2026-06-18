@@ -1,91 +1,79 @@
 # =============================================================================
-# IQLearn Configuration
+# IQ-Learn configuration  (Behavioral Cloning  ->  IQ-Learn)
 # =============================================================================
-# CLI flags accepted by all algorithm scripts:
-#   --device, --num_workers, --n_trials, --n_jobs, --seed,
-#   --hidden_dim, --n_hidden_layers, --dropout,
-#   --lr, --epochs, --batch_size, --scheduler_type, --early_stopping_patience,
-#   --n_bins, --binning, --ordinal_smoothing
-# =============================================================================
-# Behavioral Cloning uses a SINGLE non-parametric head:
-# a quantile-binned categorical distribution over normalised release.
+# The policy family is NOT chosen by the user.  Behavioral Cloning inspects the
+# expert release record and tunes the matching candidate pair, then keeps the
+# better policy (see bc_tuning.run_bc_tuning + distributions.detect_family_pair):
 #
-# Skew, bounded support, zero-inflation, and multimodality are all
-# captured by the predicted per-state histogramer. 
-# The bin edges and empirical bin means are computed once from
-# pooled training releases, frozen, and serialised into best_config.json so the
-# file remains self-contained.
+#     release has zero days  ->  HardGating, SoftGating   (zero-inflated)
+#     release is continuous  ->  Beta,       LogNormal    (continuous)
 #
 # List values            -> Optuna samples categorically
 # Dict {low, high, log}  -> Optuna samples from a continuous range
 # =============================================================================
 
-bc_tuning: ### Hyperparameters for Bheavioral Cloning Tuning
+bc_tuning:
 
-    # -------------------------------------------------------------------------
-    # Runtime
-    # -------------------------------------------------------------------------
   runtime:
-    device: cuda                                               # cuda | cpu
-    num_workers: 2                                            # dataloader workers
+    device: cpu                         # auto | cpu | cuda | cuda:N | mps
+    num_workers: 1                      # parallel Optuna workers (per family)
 
-    # -------------------------------------------------------------------------
-    # Optuna
-    # -------------------------------------------------------------------------
   optuna:
-    n_trials: 5                                              # number of Optuna trials
-    n_jobs: 10                                               # parallel Optuna workers (nodes)
+    n_trials: 2                         # trials PER candidate family (two families per run)
+    n_jobs: 10                          # fallback workers if runtime.num_workers is null
 
-    # -------------------------------------------------------------------------
-    # Shared backbone
-    # The state -> output MLP is unchanged by going categorical; only the final
-    # output layer differs (K logits instead of distribution parameters).
-    # -------------------------------------------------------------------------
+  # Data-driven family selection (the Paper-1 pairing, enforced automatically).
+  selection:
+    zero_frac_threshold: 0.01           # >1% of (near-)zero release days -> zero-inflated pair
+    zero_release_eps:                   # release <= eps counts as zero; null -> max(1e-6, 1e-4*max)
+
+  # ---- shared backbone (all four families) ----
   shared:
-    seed: [42, 123, 456, 789, 1024, 2048, 3407]              # random seeds for repeated evaluation
+    seed: [42, 123, 456, 789, 1024, 2048, 3407]
+    hidden_dim: [64, 128, 256, 512]
+    n_hidden_layers: [2, 3, 4, 5]
+    dropout: [0.0, 0.1, 0.2, 0.3]
+    lr: {low: 0.0001, high: 0.005, log: true}
+    epochs: [200, 250, 300, 350, 400, 450, 500]
+    batch_size: [64, 128, 256, 512]
+    scheduler_type: [cosine, plateau, none]
+    early_stopping_patience: [15, 30, 50]
 
-      # --- Policy network architecture ---
-    hidden_dim: [64, 128, 256, 512]                          # hidden-layer width
-    n_hidden_layers: [2, 3, 4, 5]                            # depth of the policy MLP
-    dropout: [0.0, 0.1, 0.2, 0.3]                            # dropout probability
+  # ---- continuous families (no zero days) ----
+  beta:
+    alpha_max: [10, 20, 50, 100]        # upper clamp on Beta alpha (min fixed at 1)
+    beta_max: [10, 20, 50, 100]         # upper clamp on Beta beta  (min fixed at 1)
+  lognormal:
+    sigma_min: {low: 0.01, high: 0.5, log: true}      # log-space std floor
+    log_epsilon: {low: 0.1, high: 10.0, log: true}    # offset in log(release + eps)
 
-      # --- Optimization ---
-    lr: {low: 0.0001, high: 0.005, log: true}                # learning rate (log-uniform)
-    epochs: [200, 250, 300, 350, 400, 450, 500]              # maximum training epochs
-    batch_size: [64, 128, 256, 512]                          # mini-batch size
-    scheduler_type: [cosine, plateau, none]                  # LR scheduler
-    early_stopping_patience: [15, 30, 50]                    # epochs w/o improvement before stop
-
-    # -------------------------------------------------------------------------
-    # Categorical (quantile-binned) policy
-    # Replaces all four former family blocks.
-    # -------------------------------------------------------------------------
-  categorical:
-    n_bins: [20, 30, 50, 75, 100]                            # K: grid resolution (output-layer width)
-    binning: [quantile, log]                                 # edge placement on the normalised release axis
-    ordinal_smoothing: [0.0, 0.5, 1.0, 1.5]                  # Gaussian soft-label width in BIN UNITS
+  # ---- zero-inflated families (zero days present) ----
+  hardgating:
+    zero_threshold: [0.005, 0.01, 0.015, 0.02]        # release below this is "no release"
+  softgating:
+    zero_threshold: [0.005, 0.01, 0.02]
 
 
 iq_tuning:
 
   runtime:
-    device: cuda
-    num_workers: 2
+    device: cpu
+    num_workers: 1
 
   optuna:
-    n_trials: 5
+    n_trials: 2
     n_jobs: 10
 
-  # Actor architecture + bin grid are INHERITED from bc_best_config.json
+  # Actor architecture + distribution family are INHERITED from bc_best_config.json
   # (warm-started from bc_policy.pt). They are NOT searched here.
 
   training:
     batch_size: [64, 128, 256, 512]
     critic_warm_up_epochs: [50, 100, 150, 200]
     n_epochs: [200, 250, 300, 350, 400]
-    warmup_patience: [15, 30, 50]                       # warm-up epochs w/o composite gain -> stop
-    joint_patience: [15, 30, 50]                       # joint   epochs w/o composite gain -> stop
-    scheduler_type: [cosine, plateau, none]                # one type, applied to critic (warm-up),
+    warmup_patience: [15, 30, 50]
+    joint_patience: [15, 30, 50]
+    scheduler_type: [cosine, plateau, none]
 
   # Critic is trained from scratch -> architecture is tunable
   critic:
@@ -101,18 +89,14 @@ iq_tuning:
     alpha_entropy: {low: 0.01, high: 1.0, log: true}
     alpha_reg: {low: 0.01, high: 1.0, log: true}
     lambda_bc: {low: 0.0, high: 1.0, log: false}
-  # -------------------------------------------------------------------------
-  # Early stopping (fixed; patiences themselves are tuned above)
-  # -------------------------------------------------------------------------
+
   early_stopping:
-    min_delta: 0.0                                         # composite gain must exceed this to count
-   # Composite score (mostly env-free; rollout slice optional)
+    min_delta: 0.0
+
+  # Composite score (mostly env-free; the rollout slice scores closed-loop fidelity)
   scoring:
-    expert_advantage: 0.40    # reward quality — expert Q above random
-    q_smoothness: 0.25        # reward quality — temporal Q smoothness
-    prediction_fidelity: 0.20   # rollout: storage + release r/rmse via mass balance
-    entropy: 0.075            # robustness — policy not collapsed / exploded
-    action_diversity: 0.075   # robustness — actions vary across states
-
-
-# =============================================================================
+    expert_advantage: 0.40      # reward quality — expert Q above random
+    q_smoothness: 0.25          # reward quality — temporal Q smoothness
+    prediction_fidelity: 0.20   # rollout: storage + release r/nRMSE via mass balance
+    entropy: 0.075              # robustness — policy not collapsed / exploded
+    action_diversity: 0.075     # robustness — actions vary across states

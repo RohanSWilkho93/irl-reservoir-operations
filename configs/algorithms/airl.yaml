@@ -1,115 +1,91 @@
 # =============================================================================
-# Algorithm Configuration: Adversarial Inverse Reinforcement Learning (AIRL)
+# AIRL configuration  (BC tuning -> discriminator warm-up + joint PPO tuning)
 # =============================================================================
-# Controls Optuna hyperparameter search for airl/tune.py.
-#
-# The policy network architecture and weights are fixed from the best BC
-# configuration (results/<reservoir>/behavioral_cloning/best_config.json).
-# Only AIRL-specific components are tuned here: the critic (value function),
-# the discriminator (reward network + shaping function), and the PPO
-# training schedule.
+# Stage 1 (bc_tuning) is AIRL's own BC tuner — identical structure to
+# iqlearn.yaml's bc_tuning: data-driven family pair, tune both, keep the winner.
+# Stage 2 (airl_tuning) warm-starts the actor from bc_policy.pt and tunes the
+# AIRL discriminator + PPO. Optuna maximises the validation composite:
+#   0.50*disc_balance + 0.125*release_corr + 0.125*(1-release_nRMSE)
+#                     + 0.125*storage_corr + 0.125*(1-storage_nRMSE)
 # =============================================================================
 
-# --------------------------------------------------------------------------
-# Runtime settings
-# Set via CLI on first run — values are written back here for reproducibility.
-#
-# CLI flags:
-#   --device      <value>   compute device
-#   --num_workers <value>   parallel Optuna workers (overrides optuna.n_jobs)
-#
-# device options:
-#   auto          use GPU if available, otherwise CPU (recommended default)
-#   cpu           CPU only — use on login nodes or CPU-only allocations
-#   cuda          default GPU (first available)
-#   cuda:0/1/...  specific GPU by index
-#   mps           Apple Silicon GPU
-#
-# num_workers (HPC / SLURM):
-#   AIRL rollouts are expensive — match to available GPU workers or CPU cores.
-#   Set to --cpus-per-task (CPU) or number of GPUs for parallel trials.
-#   Example:  #SBATCH --cpus-per-task=10  →  num_workers: 10
-#   null means fall back to optuna.n_jobs below.
-# --------------------------------------------------------------------------
-runtime:
-  device: cpu
-  num_workers: 1     # null: falls back to optuna.n_jobs
+bc_tuning:
 
-# --------------------------------------------------------------------------
-# Optuna study settings
-# AIRL tuning involves environment rollouts and is significantly slower than
-# BC tuning. Start with fewer trials if compute time is limited.
-# n_jobs: used only when runtime.num_workers is null.
-# --------------------------------------------------------------------------
-optuna:
-  n_trials: 2
-  n_jobs: 10
+  runtime:
+    device: cpu
+    num_workers: 6
 
-# --------------------------------------------------------------------------
-# Hyperparameter search space
-# Each entry maps to one Optuna suggest call in airl/tune.py.
-#
-# Format:
-#   param: [a, b, c]                      → suggest_categorical
-#   param: {low: x, high: y}              → suggest_float (uniform)
-#   param: {low: x, high: y, log: true}   → suggest_float (log-uniform)
-#   param: {low: x, high: y, type: int}   → suggest_int
-# --------------------------------------------------------------------------
-search_space:
+  optuna:
+    n_trials: 1000                      # trials PER candidate family (two families per run)
+    n_jobs: 10
 
-  # Critic network (value function — trained from scratch)
-  critic_hidden_dim: [64, 128, 256, 512]
-  critic_n_hidden_layers: {low: 2, high: 4, type: int}
+  selection:
+    zero_frac_threshold: 0.01
+    zero_release_eps:                   # null -> max(1e-6, 1e-4*max)
 
-  # Discriminator network (reward + shaping — trained from scratch)
-  disc_hidden_dim: [64, 128, 256, 512]
-  disc_n_hidden_layers: {low: 2, high: 4, type: int}
-  disc_dropout: {low: 0.0, high: 0.5}            # shared by reward net and shaping net
+  shared:
+    seed: [42, 123, 456, 789, 1024, 2048, 3407]
+    hidden_dim: [64, 128, 256, 512]
+    n_hidden_layers: [2, 3, 4, 5]
+    dropout: [0.0, 0.1, 0.2, 0.3]
+    lr: {low: 0.0001, high: 0.005, log: true}
+    epochs: [200, 250, 300, 350, 400, 450, 500]
+    batch_size: [64, 128, 256, 512]
+    scheduler_type: [cosine, plateau, none]
+    early_stopping_patience: [15, 30, 50]
 
-  # Learning rates
-  # lr_policy:        policy network (initialized from BC — use a small LR)
-  # lr_critic:        value function
-  # lr_discriminator: AIRL discriminator
-  lr_policy: {low: 1.0e-6, high: 1.0e-3, log: true}
-  lr_critic: {low: 1.0e-5, high: 1.0e-2, log: true}
-  lr_discriminator: {low: 1.0e-5, high: 1.0e-3, log: true}
+  beta:
+    alpha_max: [10, 20, 50, 100]
+    beta_max:  [10, 20, 50, 100]
+  lognormal:
+    sigma_min:   {low: 0.01, high: 0.5,  log: true}
+    log_epsilon: {low: 0.1,  high: 10.0, log: true}
+  hardgating:
+    zero_threshold: [0.005, 0.01, 0.015, 0.02]
+  softgating:
+    zero_threshold: [0.005, 0.01, 0.02]
 
-  # Discriminator training
-  # disc_updates:           gradient steps per iteration (more = slower but stabler)
-  # warmup_disc_updates:    steps used during the warm-up phase only
-  # gradient_penalty_coef:  WGAN-GP penalty weight (stabilizes discriminator training)
-  # label_smoothing_epsilon: soft labels for expert (1-ε) and policy (ε) targets
-  disc_updates: {low: 1, high: 15, type: int}
-  warmup_disc_updates: [5, 10, 15]
-  gradient_penalty_coef: {low: 1.0, high: 20.0}
-  label_smoothing_epsilon: {low: 0.0, high: 0.15}
 
-  # PPO parameters
-  # gamma:       discount factor
-  # gae_lambda:  GAE bias-variance tradeoff (higher = lower bias, higher variance)
-  # clip_epsilon: PPO clipping range
-  # entropy_coef: entropy bonus weight (encourages exploration)
-  # ppo_epochs:  gradient steps per rollout batch
-  gamma: [0.95, 0.99, 0.999]
-  gae_lambda: {low: 0.90, high: 0.99}
-  clip_epsilon: {low: 0.1, high: 0.3}
-  entropy_coef: {low: 0.001, high: 0.1, log: true}
-  ppo_epochs: {low: 3, high: 10, type: int}
+airl_tuning:
 
-  # KL regularization
-  # Penalizes divergence between the current policy and the BC prior.
-  # 0.0 = no regularization; higher values anchor the policy closer to BC.
-  kl_regularization_coef: {low: 0.0, high: 2.0}
+  runtime:
+    device: cpu
+    num_workers: 4
 
-  # Training schedule
-  # warmup_iterations:   iterations of discriminator-only training before joint update
-  # num_iterations:      total training iterations
-  # steps_per_iteration: environment steps collected per iteration (rollout size)
-  # batch_size:          minibatch size for discriminator and PPO updates
-  warmup_iterations: [25, 50, 75, 100]
-  num_iterations: [200, 300, 400, 500]
-  steps_per_iteration: [1024, 2048, 4096]
-  batch_size: [256, 512, 1024]
+  optuna:
+    n_trials: 100                       # AIRL trials are heavy (BC warm-start + adversarial PPO, 5 networks)
+    n_jobs: 4
 
-  # Early stopping patience (iterations without validation improvement)
-  early_stopping_patience: [25, 50, 75, 100]
+  # Actor architecture + distribution family are INHERITED from bc_policy.pt.
+  search_space:
+    # value critic + discriminator architectures
+    critic_hidden_dim: [128, 256, 512]
+    critic_n_hidden_layers: [2, 3, 4]
+    disc_hidden_dim: [128, 256, 512]
+    disc_n_hidden_layers: [2, 3, 4]
+
+    # learning rates
+    lr_policy:        {low: 1.0e-6, high: 1.0e-3, log: true}
+    lr_critic:        {low: 1.0e-5, high: 1.0e-2, log: true}
+    lr_discriminator: {low: 1.0e-5, high: 1.0e-3, log: true}
+
+    # discriminator training
+    disc_updates: [1, 3, 5, 8, 12, 15]
+    warmup_disc_updates: [5, 10, 15]
+    gradient_penalty_coef:   {low: 1.0, high: 20.0}
+    label_smoothing_epsilon: {low: 0.0, high: 0.15}
+
+    # PPO
+    gamma: [0.95, 0.99, 0.999]
+    gae_lambda:   {low: 0.9, high: 0.99}
+    clip_epsilon: {low: 0.1, high: 0.3}
+    entropy_coef: {low: 0.001, high: 0.1, log: true}
+    ppo_epochs: [3, 5, 8, 10]
+    kl_regularization_coef: {low: 0.0, high: 2.0}
+
+    # schedule
+    warmup_iterations: [30, 50, 75, 100]
+    num_iterations: [200, 300, 400]
+    steps_per_iteration: [1024, 2048, 4096]
+    batch_size: [256, 512, 1024]
+    early_stopping_patience: [30, 50, 75]

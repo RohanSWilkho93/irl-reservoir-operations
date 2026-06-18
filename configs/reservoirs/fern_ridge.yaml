@@ -47,7 +47,16 @@ reservoir:
     max_release:             # null -> bounds.release.max
     min_release:             # null -> bounds.release.min
 
-  bounds: {}
+  bounds:
+    storage:
+      min: 1.668
+      max: 121.479
+    net_inflow:
+      min: -32.283971
+      max: 205.607926
+    release:
+      min: 0.337
+      max: 143.566
 
 # DeepMaxEnt discretization search bounds.
 # Step sizes define the resolution of the state-action grid.
@@ -55,6 +64,6 @@ reservoir:
 deepmaxent:
   storage_step: [1.0, 2.0, 5.0, 10.0, 15.0]
   release_step: [5.0, 10.0, 15.0, 20.0, 25.0]
-  inflow_step:  [5.0, 10.0, 15.0, 20.0, 25.0]
+  inflow_step: [5.0, 10.0, 15.0, 20.0, 25.0]
   reward_features: []
 

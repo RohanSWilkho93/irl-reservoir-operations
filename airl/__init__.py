@@ -1,1 +1,1 @@
-# airl/__init__.py
+"""Adversarial IRL (AIRL) for reservoir operations — BC warm-start + PPO/discriminator."""

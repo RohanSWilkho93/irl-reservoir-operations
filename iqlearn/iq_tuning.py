@@ -366,9 +366,10 @@ def run_iq_tuning(*, reservoir: str, res_cfg: dict, algo_cfg: dict, data, device
         sys.exit(f"ERROR: bc_policy.pt not found in {run_folder}. Run BC tuning for run_id={run_id} first.")
 
     # ---- load BC checkpoint once; seed + drift guard ----
-    bc_ckpt = torch.load(bc_policy_path, map_location="cpu")
+    bc_ckpt = torch.load(bc_policy_path, map_location="cpu", weights_only=False)
     bc_config = bc_ckpt["config"]
     seed = int(bc_config["seed"])
+    policy_family = bc_config.get("policy_family", "beta")
     if data.state_dim != bc_config["state_dim"]:
         sys.exit(f"ERROR: state_dim mismatch — data={data.state_dim} vs bc_policy="
                  f"{bc_config['state_dim']}. The IQ data load must match the BC run "
@@ -385,7 +386,7 @@ def run_iq_tuning(*, reservoir: str, res_cfg: dict, algo_cfg: dict, data, device
     buffer = ExpertBuffer(data.train, device_str)
 
     print(f"\nIQ-Learn tuning  |  reservoir={reservoir}  run_id={run_id}  "
-          f"seed={seed}  trials={n_trials}  device={device_str}")
+          f"family={policy_family}  seed={seed}  trials={n_trials}  device={device_str}")
     print(f"  warm-start: {bc_policy_path.name}   state_dim={data.state_dim}   "
           f"train={buffer.size} transitions   val={env.T} steps")
 
@@ -407,6 +408,7 @@ def run_iq_tuning(*, reservoir: str, res_cfg: dict, algo_cfg: dict, data, device
     # ---- retrain the winning config (single-threaded, isolated) and save ----
     best = study.best_trial
     best_cfg = _iq_config_from_params(best.params, state_dim=data.state_dim, seed=seed, device=device_str)
+    best_cfg.policy_family = policy_family
     best_score, agent = _train_and_score(best_cfg, bc_ckpt, buffer, env, weights, device_str,
                                           eval_interval=eval_interval, min_delta=min_delta,
                                           trial=None, return_agent=True)

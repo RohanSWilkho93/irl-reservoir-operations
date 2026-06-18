@@ -36,6 +36,17 @@ import torch
 import yaml
 
 
+# Console output uses a few Unicode glyphs (arrows, box rules, check marks).
+# Windows' default cp1252 console can't encode them, so force UTF-8 (with a safe
+# fallback) on the standard streams.  Imported by every stage, so this runs once
+# before any stage prints.  Guarded: a no-op where reconfigure is unavailable.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+
 # Run folders are bare positive integers: "1", "2", "3", ...
 _RUN_FOLDER_PATTERN = re.compile(r"^(\d+)$")
 

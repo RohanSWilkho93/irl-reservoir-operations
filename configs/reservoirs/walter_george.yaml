@@ -47,7 +47,7 @@ reservoir:
     max_release:             # null -> bounds.release.max
     min_release:             # null -> bounds.release.min
 
-  ounds: {}
+  bounds: {}
 
 # DeepMaxEnt discretization search bounds.
 # Step sizes define the resolution of the state-action grid.

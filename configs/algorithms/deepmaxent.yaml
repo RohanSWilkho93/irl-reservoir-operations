@@ -1,90 +1,58 @@
 # =============================================================================
-# Algorithm Configuration: Deep Maximum Entropy IRL
+# Deep MaxEnt IRL configuration  (single stage: tune -> retrain best -> results)
 # =============================================================================
-# Controls Optuna hyperparameter search for deepmaxent/tune.py.
-# Reservoir-specific step sizes (storage_step, release_step, inflow_step)
-# are set per reservoir in configs/reservoirs/<name>.yaml — not here.
+# Discretized-grid Maximum-Entropy IRL: a reward network over
+# [storage, release, sin(month), cos(month), inflow] is trained by matching
+# expert vs policy state-visitation frequencies (grad = mu_E - mu_L), with the
+# policy obtained by entropy-regularized soft value iteration on a gridded MDP.
+#
+# Optuna maximises the VALIDATION unified score:
+#   0.50*(1 - SVF_diff_norm) + 0.125*release_corr + 0.125*storage_corr
+#                            + 0.125*(1 - release_nRMSE) + 0.125*(1 - storage_nRMSE)
+#
+# List values            -> Optuna samples categorically
+# Dict {low, high, log}  -> continuous range  (optional `step` for grid sampling)
 # =============================================================================
 
-# --------------------------------------------------------------------------
-# Runtime settings
-# Set via CLI on first run — values are written back here for reproducibility.
-# Subsequent runs reuse these values unless overridden again.
-#
-# CLI flags:
-#   --device      <value>   compute device
-#   --num_workers <value>   parallel Optuna workers (overrides optuna.n_jobs)
-#
-# device options:
-#   auto          use GPU if available, otherwise CPU (recommended default)
-#   cpu           CPU only — use on login nodes or CPU-only allocations
-#   cuda          default GPU (first available)
-#   cuda:0/1/...  specific GPU by index (for multi-GPU nodes)
-#   mps           Apple Silicon GPU
-#
-# num_workers (HPC / SLURM):
-#   Set this to match --cpus-per-task in your SLURM job script.
-#   Example:  #SBATCH --cpus-per-task=20  →  num_workers: 20
-#   null means fall back to optuna.n_jobs below.
-# --------------------------------------------------------------------------
-runtime:
-  device: cpu
-  num_workers: 1     # null: falls back to optuna.n_jobs
+deepmaxent:
 
-# --------------------------------------------------------------------------
-# Optuna study settings
-# n_trials: total hyperparameter configurations evaluated.
-# n_jobs:   parallel workers — used only when runtime.num_workers is null.
-#           On HPC, prefer setting runtime.num_workers via CLI instead.
-# --------------------------------------------------------------------------
-optuna:
-  n_trials: 2
-  n_jobs: 10
+  runtime:
+    device: cpu                 # auto | cpu | cuda  (value iteration is CPU/numpy; only the reward net uses the device)
+    num_workers: 4              # parallel Optuna workers
 
-# --------------------------------------------------------------------------
-# State space constraint
-# Trials are pruned if (n_storage_bins × n_inflow_bins) exceeds this limit.
-# Increase only if you have enough RAM and compute time.
-# --------------------------------------------------------------------------
-state_space:
-  max_states: 5000
+  optuna:
+    n_trials: 500               # Deep MaxEnt trials are heavy (each builds the transition matrix + value iteration)
+    n_jobs: 4                   # fallback workers if runtime.num_workers is null
 
-# --------------------------------------------------------------------------
-# Hyperparameter search space
-# Each entry maps to one Optuna suggest call in deepmaxent/tune.py.
-#
-# Format:
-#   param: [a, b, c]            → suggest_categorical
-#   param: {low: x, high: y}    → suggest_float (uniform)
-#   param: {low: x, high: y, log: true}  → suggest_float (log-uniform)
-#   param: {low: x, high: y, step: z}   → suggest_float (stepped)
-# --------------------------------------------------------------------------
-search_space:
+  # Guard: each trial's transition matrix P is dense (n_states, 12, n_releases,
+  # n_states); n_states = n_storage * n_inflow.  Skip (prune) grids beyond this.
+  guards:
+    max_states: 5000               # prune trials with n_states = n_storage*n_inflow above this
+    max_transition_elems: 2.0e8    # prune trials whose dense P (n_states*12*n_release*n_states) is bigger (~0.8 GB)
 
-  # Random seeds tested during tuning (ensures results are not seed-sensitive)
-  seed: [42, 123, 456, 789, 1024, 2048]
+  tuning:
+    n_mc_simulations: 30        # reduced MC during the search (faster trials)
+    final_n_mc_simulations: 50  # full MC when retraining + scoring the winner
 
-  # MDP parameters
-  # gamma: discount factor for future rewards
-  # tau:   softmax temperature in soft value iteration (lower = sharper policy)
-  gamma: [0.90, 0.95, 0.99]
-  tau: {low: 0.01, high: 1.0, log: true}
+  search_space:
+    seed: [42, 123, 456, 789, 1024, 2048]
 
-  # Reward network architecture
-  # hidden_dim1/2: neurons per hidden layer (two-layer network)
-  # dropout:       dropout rate applied after each hidden layer
-  hidden_dim1: [64, 128, 256, 512]
-  hidden_dim2: [64, 128, 256, 512]
-  dropout: {low: 0.0, high: 0.4, step: 0.1}
+    # discretization steps (engineering units) — the main grid-size driver
+    storage_step: [5.0, 10.0]
+    release_step: [10.0, 25.0, 50.0]
+    inflow_step: [10.0, 25.0, 50.0]
 
-  # Training
-  # lr:           Adam learning rate
-  # n_iterations: maximum training epochs before forced stop
-  # batch_size:   number of gradient points sampled per update step
-  lr: {low: 1.0e-5, high: 1.0e-3, log: true}
-  n_iterations: [100, 200, 300, 400, 500]
-  batch_size: [1000, 2000, 5000]
+    # MDP
+    gamma: [0.90, 0.95, 0.99]
+    tau: {low: 0.01, high: 1.0, log: true}
 
-  # Early stopping
-  # Stops training if the validation S_DeepMaxEnt difference does not improve for this many epochs.
-  early_stop_patience: [50, 75, 100, 150]
+    # reward network
+    hidden_dim1: [64, 128, 256, 512]
+    hidden_dim2: [64, 128, 256, 512]
+    dropout: {low: 0.0, high: 0.4, step: 0.1}
+
+    # training
+    lr: {low: 1.0e-5, high: 1.0e-3, log: true}
+    n_iterations: [100, 200, 300, 400, 500]
+    batch_size: [1000, 2000, 5000]
+    val_early_stop_patience: [50, 75, 100, 150]
