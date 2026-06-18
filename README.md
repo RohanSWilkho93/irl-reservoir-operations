@@ -1,4 +1,4 @@
-# Decoding Reservoir Operating Policies with Inverse Reinforcement Learning
+# Decoding Reservoir Operations with Inverse Reinforcement Learning
 
 A collection of inverse reinforcement learning (IRL) methods that **recover the
 operating policy — and the implied reward — of a real reservoir from its observed
