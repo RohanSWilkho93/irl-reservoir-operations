@@ -9,6 +9,9 @@ landscape, and SHAP attributions.
 All methods share one data pipeline, one config scheme, and one results layout;
 each lives in its own package with its own detailed README.
 
+> 📄 **Associated paper.** This repository accompanies the paper 
+> **"Decoding decision-making in managed hydrologic systems with inverse reinforcement learning"**, currently under review at *Water Resources Research*.
+
 ## Methods
 
 | Method | Folder | Status | README |
