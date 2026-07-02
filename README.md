@@ -104,6 +104,33 @@ python airl/results.py --reservoir conchas            # re-render latest run
 
 See each method's README for the full flag list and per-method notes.
 
+## Parallel tuning (optional, scheduler-agnostic, no internet)
+
+Every tuning stage can run Optuna trials in parallel. Both paths are local — no database server,
+no internet:
+
+- **One process (threads):** add `--num_workers N` (e.g. `--iq_n_jobs 10` on `run.py`) — N trials
+  at once in a single process, on your laptop or one compute node.
+- **Multiple worker processes (any scheduler, or manual):** point several processes at one **local
+  journal file** with `--storage <path>`. Each stage takes `--storage <path> --role {worker,finalize}`:
+  launch as many `--role worker` processes as you want (they share the file and split the `--n_trials`
+  total), then run one `--role finalize` to pick the best, retrain, and save. `--run_id` is required
+  so every process targets the same run folder.
+
+  ```bash
+  # 4 background workers + a finalize, no cluster needed (IQ-Learn BC stage shown):
+  J=results/garrison/iqlearn/1/bc.log
+  for i in 1 2 3 4; do
+    python iqlearn/bc_tuning.py --reservoir garrison --run_id 1 --storage $J --role worker --n_trials 1000 &
+  done ; wait
+  python iqlearn/bc_tuning.py --reservoir garrison --run_id 1 --storage $J --role finalize --n_trials 1000
+  ```
+
+  On an HPC cluster, launch the same `--role worker` command from your scheduler (e.g. a SLURM job
+  array or several `srun` tasks) and add a dependent `--role finalize` step — the codebase stays
+  scheduler-agnostic, so adapt to your site's conventions. Stage entry points:
+  `iqlearn/bc_tuning.py` → `iqlearn/iq_tuning.py`; `deepmaxent/tuning.py`; `airl/bc_tuning.py` → `airl/airl_tuning.py`.
+
 ## Bundled reservoirs
 
 Nine U.S. Army Corps / Reclamation reservoirs ship in `data/` (each a daily CSV with
@@ -169,5 +196,9 @@ reservoir:
 - `use_month_encoding: true` gives the policy seasonal awareness and enables the **monthly** SHAP /
   reward panels.
 - Algorithm hyperparameters and Optuna search spaces live in `configs/algorithms/<method>.yaml`,
-  kept separate from the reservoir config. CLI flags on `run.py` are written back to the reservoir
-  YAML so runs are reproducible.
+  kept separate from the reservoir config.
+- **CLI overrides are ephemeral by default.** Flags like `--bc_n_trials`, `--device`, or
+  `--max_release` apply to *that run only* and leave the YAML files untouched. Pass `--save-config`
+  on any entrypoint to also persist those overrides back into the config (comment-preserving), e.g.
+  to lock in a tuned budget. (The auto-filled `reservoir.bounds` on line above are separate — they
+  are always written on first load, since standalone `results.py` needs them to reproduce the run.)

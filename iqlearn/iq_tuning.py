@@ -50,6 +50,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from utils.data import load_reservoir_data
+from utils.optuna_dist import build_study, run_optimize, n_completed
 from iqlearn.utils.runs import _resolve_device, _writeback_yaml, _find_run_folder
 from iqlearn.expert_buffer import ExpertBuffer
 from iqlearn.environment import MassBalanceConfig, ReservoirRollout
@@ -352,6 +353,14 @@ def run_iq_tuning(*, reservoir: str, res_cfg: dict, algo_cfg: dict, data, device
     min_delta = float((iq.get("early_stopping", {}) or {}).get("min_delta", 0.0))
     pruner_cfg = opt.get("pruner", {}) or {}
 
+    # ---- distributed (local shared-journal) options ----
+    storage = getattr(cli_args, "storage", None)
+    study_name = getattr(cli_args, "study_name", None) or f"{reservoir}_iq"
+    role = getattr(cli_args, "role", None) or "full"
+    if storage is not None and run_id is None:
+        sys.exit("ERROR: --storage requires an explicit --run_id so every worker + the "
+                 "finalize step target the same run folder.")
+
     # ---- locate the (existing) run folder + bc_policy.pt ----
     base_dir = _ROOT / "results" / reservoir / "iqlearn"
     if run_id is None:
@@ -390,22 +399,32 @@ def run_iq_tuning(*, reservoir: str, res_cfg: dict, algo_cfg: dict, data, device
     print(f"  warm-start: {bc_policy_path.name}   state_dim={data.state_dim}   "
           f"train={buffer.size} transitions   val={env.T} steps")
 
-    # ---- Optuna study ----
-    study = optuna.create_study(
+    # ---- Optuna study (in-memory, or a shared local journal when --storage) ----
+    study, shared = build_study(
         direction="maximize",
         sampler=optuna.samplers.TPESampler(seed=seed),
         pruner=optuna.pruners.MedianPruner(
             n_startup_trials=int(pruner_cfg.get("n_startup_trials", 5)),
             n_warmup_steps=int(pruner_cfg.get("n_warmup_steps", 0)),
         ),
+        storage=storage, study_name=study_name,
     )
-    study.optimize(
-        _make_objective(iq, bc_ckpt, buffer, env, weights, data.state_dim, seed,
-                        device_str, eval_interval, min_delta),
-        n_trials=n_trials, n_jobs=n_jobs,
-    )
+    if role != "finalize":
+        print(f"  optimize: role={role}  shared={shared}  n_jobs={n_jobs}  n_trials(cap)={n_trials}")
+        run_optimize(
+            study,
+            _make_objective(iq, bc_ckpt, buffer, env, weights, data.state_dim, seed,
+                            device_str, eval_interval, min_delta),
+            n_trials=n_trials, n_jobs=n_jobs, shared=shared,
+        )
+    if role == "worker":
+        print(f"  [worker] exiting — {n_completed(study)} completed trials in the shared study (no save).")
+        return {"run_folder": run_folder, "run_id": run_id, "role": "worker",
+                "n_completed": n_completed(study)}
 
     # ---- retrain the winning config (single-threaded, isolated) and save ----
+    if n_completed(study) == 0:
+        sys.exit("ERROR: no completed IQ-Learn trials in the study — cannot finalize/save.")
     best = study.best_trial
     best_cfg = _iq_config_from_params(best.params, state_dim=data.state_dim, seed=seed, device=device_str)
     best_cfg.policy_family = policy_family
@@ -450,6 +469,14 @@ def _parse_args():
     p.add_argument("--device", default=None)
     p.add_argument("--num_workers", type=int, default=None)
     p.add_argument("--n_trials", type=int, default=None)
+    # distributed local-journal tuning (multiple worker processes, any scheduler; no internet)
+    p.add_argument("--storage", default=None,
+                   help="Local JournalFileStorage path for shared-journal distributed tuning "
+                        "(e.g. results/<res>/iqlearn/<run_id>/optuna_journal.log). Omit for in-memory.")
+    p.add_argument("--study_name", default=None, help="Shared study name (default: <reservoir>_iq).")
+    p.add_argument("--role", choices=["full", "worker", "finalize"], default="full",
+                   help="worker = add trials only; finalize = retrain+save best from the completed "
+                        "study; full = optimize then save (default).")
     # physics / mass-balance overrides (CLI > config > data)
     p.add_argument("--storage_variable", default=None)
     p.add_argument("--inflow_variable", default=None)
@@ -459,11 +486,16 @@ def _parse_args():
     p.add_argument("--min_release", type=float, default=None)
     p.add_argument("--seconds_per_day", type=float, default=None)
     p.add_argument("--volume_factor", type=float, default=None)
+    p.add_argument("--save-config", dest="save_config", action="store_true",
+                   help="Persist CLI overrides back into the YAML config files "
+                        "(default: overrides apply to this run only).")
     return p.parse_args()
 
 
-def _apply_cli_overrides(args, res_cfg: dict, algo_cfg: dict, res_cfg_path: Path, algo_cfg_path: Path) -> None:
-    """Mutate in-memory configs with provided CLI values; write only the changed keys back."""
+def _apply_cli_overrides(args, res_cfg: dict, algo_cfg: dict, res_cfg_path: Path, algo_cfg_path: Path,
+                         save_config: bool = False) -> None:
+    """Mutate in-memory configs with provided CLI values; persist the changed
+    keys to the YAML files only when `save_config` is True (default: ephemeral)."""
     g = lambda n: getattr(args, n, None)
 
     # --- reservoir: physics roles + mass-balance overrides ---
@@ -494,10 +526,11 @@ def _apply_cli_overrides(args, res_cfg: dict, algo_cfg: dict, res_cfg_path: Path
     if op_upd:
         algo_sub["optuna"] = op_upd
 
-    if res_updates:
-        _writeback_yaml(res_cfg_path, res_updates)
-    if algo_sub:
-        _writeback_yaml(algo_cfg_path, {"iq_tuning": algo_sub})
+    if save_config:
+        if res_updates:
+            _writeback_yaml(res_cfg_path, res_updates)
+        if algo_sub:
+            _writeback_yaml(algo_cfg_path, {"iq_tuning": algo_sub})
 
 
 def main():
@@ -514,7 +547,8 @@ def main():
     with open(algo_cfg_path) as f:
         algo_cfg = yaml.safe_load(f)
 
-    _apply_cli_overrides(args, res_cfg, algo_cfg, res_cfg_path, algo_cfg_path)
+    _apply_cli_overrides(args, res_cfg, algo_cfg, res_cfg_path, algo_cfg_path,
+                         save_config=args.save_config)
     device_str = _resolve_device(algo_cfg["iq_tuning"]["runtime"]["device"])
 
     print(f"Loading data for reservoir '{args.reservoir}' \u2026")

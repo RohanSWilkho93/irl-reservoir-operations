@@ -91,6 +91,11 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--iq_n_trials", type=int, default=None, help="IQ Optuna trials (else config).")
     p.add_argument("--iq_n_jobs",   type=int, default=None, help="IQ parallel workers (else config).")
 
+    # --- config persistence ---
+    p.add_argument("--save-config", dest="save_config", action="store_true",
+                   help="Persist CLI overrides back into the YAML config files "
+                        "(default: overrides apply to this run only).")
+
     # --- IQ-only physics (mass balance); CLI > config > data ---
     p.add_argument("--storage_variable", default=None, help="State column that is storage.")
     p.add_argument("--inflow_variable",  default=None, help="State column that is inflow.")
@@ -161,11 +166,14 @@ def main() -> None:
     bc_args = _bc_namespace(a)
     iq_args = _iq_namespace(a)
 
-    # Apply BOTH stages' CLI overrides (in-memory mutate + comment-preserving
-    # write-back).  BC touches data/split + bc_tuning; IQ touches physics +
-    # iq_tuning — disjoint keys, so order is irrelevant.
-    _bc_apply_overrides(bc_args, res_cfg, algo_cfg, res_cfg_path, algo_cfg_path)
-    _iq_apply_overrides(iq_args, res_cfg, algo_cfg, res_cfg_path, algo_cfg_path)
+    # Apply BOTH stages' CLI overrides in-memory (this run only).  With
+    # --save-config they are ALSO written back to the YAML (comment-preserving).
+    # BC touches data/split + bc_tuning; IQ touches physics + iq_tuning —
+    # disjoint keys, so order is irrelevant.
+    _bc_apply_overrides(bc_args, res_cfg, algo_cfg, res_cfg_path, algo_cfg_path,
+                        save_config=a.save_config)
+    _iq_apply_overrides(iq_args, res_cfg, algo_cfg, res_cfg_path, algo_cfg_path,
+                        save_config=a.save_config)
 
     # Resolve device once; both stages receive the same resolved string.
     device_str = _resolve_device(

@@ -29,6 +29,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from utils.data import load_reservoir_data
+from utils.optuna_dist import build_study, run_optimize, n_completed
 from iqlearn.utils.runs import _resolve_device, _writeback_yaml, _find_run_folder
 from iqlearn.iq_tuning import _resolve_mass_balance, _col_bounds
 from iqlearn.environment import ReservoirRollout
@@ -111,6 +112,14 @@ def run_airl_tuning(*, reservoir, res_cfg, algo_cfg, data, device_str, run_id=No
     n_trials = int(getattr(cli_args, "n_trials", None) or opt.get("n_trials", 100))
     n_jobs = int(rt["num_workers"]) if rt.get("num_workers") is not None else int(opt.get("n_jobs", 1))
 
+    # ---- distributed (local shared-journal) options ----
+    storage = getattr(cli_args, "storage", None)
+    study_name = getattr(cli_args, "study_name", None) or f"{reservoir}_airl"
+    role = getattr(cli_args, "role", None) or "full"
+    if storage is not None and run_id is None:
+        sys.exit("ERROR: --storage requires an explicit --run_id so every worker + the "
+                 "finalize step target the same run folder.")
+
     base_dir = _ROOT / "results" / reservoir / "airl"
     if run_id is None:
         ids = ([int(d.name) for d in base_dir.iterdir() if d.is_dir() and d.name.isdigit()]
@@ -151,10 +160,16 @@ def run_airl_tuning(*, reservoir, res_cfg, algo_cfg, data, device_str, run_id=No
             print(f"  trial {trial.number} failed ({type(exc).__name__}: {exc})", file=sys.stderr)
             return 0.0
 
-    study = optuna.create_study(direction="maximize", sampler=optuna.samplers.TPESampler(seed=seed),
-                                pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=2))
+    study, shared = build_study(direction="maximize", sampler=optuna.samplers.TPESampler(seed=seed),
+                                pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=2),
+                                storage=storage, study_name=study_name)
     optuna.logging.set_verbosity(optuna.logging.WARNING)
-    study.optimize(objective, n_trials=n_trials, n_jobs=n_jobs)
+    if role != "finalize":
+        print(f"  optimize: role={role}  shared={shared}  n_jobs={n_jobs}  n_trials(cap)={n_trials}")
+        run_optimize(study, objective, n_trials=n_trials, n_jobs=n_jobs, shared=shared)
+    if role == "worker":
+        print(f"  [worker] exiting — {n_completed(study)} completed trials in the shared study (no save).")
+        return {"run_folder": folder, "run_id": run_id, "role": "worker", "n_completed": n_completed(study)}
 
     completed = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
     if not completed:
@@ -218,6 +233,13 @@ def _parse_args():
     p.add_argument("--device", default=None)
     p.add_argument("--num_workers", type=int, default=None)
     p.add_argument("--n_trials", type=int, default=None)
+    # distributed local-journal tuning (multiple worker processes, any scheduler; no internet)
+    p.add_argument("--storage", default=None,
+                   help="Local JournalFileStorage path for shared-journal distributed tuning. "
+                        "Omit for in-memory. Requires --run_id.")
+    p.add_argument("--study_name", default=None, help="Shared study name (default: <reservoir>_airl).")
+    p.add_argument("--role", choices=["full", "worker", "finalize"], default="full",
+                   help="worker = add trials only; finalize = retrain+save best; full = tune then save.")
     p.add_argument("--storage_variable", default=None)
     p.add_argument("--inflow_variable", default=None)
     p.add_argument("--max_storage", type=float, default=None)
@@ -226,10 +248,14 @@ def _parse_args():
     p.add_argument("--min_release", type=float, default=None)
     p.add_argument("--seconds_per_day", type=float, default=None)
     p.add_argument("--volume_factor", type=float, default=None)
+    p.add_argument("--save-config", dest="save_config", action="store_true",
+                   help="Persist CLI overrides back into the YAML config files "
+                        "(default: overrides apply to this run only).")
     return p.parse_args()
 
 
-def _apply_cli_overrides(args, res_cfg, algo_cfg, res_cfg_path, algo_cfg_path) -> None:
+def _apply_cli_overrides(args, res_cfg, algo_cfg, res_cfg_path, algo_cfg_path,
+                         save_config: bool = False) -> None:
     g = lambda n: getattr(args, n, None)
     res_u = {}
     cols_u = {k: g(v) for k, v in (("storage", "storage_variable"), ("inflow", "inflow_variable")) if g(v) is not None}
@@ -245,11 +271,12 @@ def _apply_cli_overrides(args, res_cfg, algo_cfg, res_cfg_path, algo_cfg_path) -
     op_u = {"n_trials": g("n_trials")} if g("n_trials") is not None else {}
     if rt_u: airl.setdefault("runtime", {}).update(rt_u)
     if op_u: airl.setdefault("optuna", {}).update(op_u)
-    if res_u: _writeback_yaml(res_cfg_path, res_u)
     algo_sub = {}
     if rt_u: algo_sub["runtime"] = rt_u
     if op_u: algo_sub["optuna"] = op_u
-    if algo_sub: _writeback_yaml(algo_cfg_path, {"airl_tuning": algo_sub})
+    if save_config:
+        if res_u: _writeback_yaml(res_cfg_path, res_u)
+        if algo_sub: _writeback_yaml(algo_cfg_path, {"airl_tuning": algo_sub})
 
 
 def main():
@@ -257,7 +284,8 @@ def main():
     res_cfg_path = _ROOT / "configs" / "reservoirs" / f"{args.reservoir}.yaml"
     algo_cfg_path = _ROOT / "configs" / "algorithms" / "airl.yaml"
     res_cfg = yaml.safe_load(open(res_cfg_path)); algo_cfg = yaml.safe_load(open(algo_cfg_path))
-    _apply_cli_overrides(args, res_cfg, algo_cfg, res_cfg_path, algo_cfg_path)
+    _apply_cli_overrides(args, res_cfg, algo_cfg, res_cfg_path, algo_cfg_path,
+                         save_config=getattr(args, "save_config", False))
     device_str = _resolve_device(algo_cfg["airl_tuning"]["runtime"]["device"])
     data = load_reservoir_data(res_cfg, res_cfg_path)
     run_airl_tuning(reservoir=args.reservoir, res_cfg=res_cfg, algo_cfg=algo_cfg,

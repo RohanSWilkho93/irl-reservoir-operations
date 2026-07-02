@@ -84,6 +84,7 @@ python deepmaxent/results.py --reservoir englebright          # defaults to late
 | `--device` | `auto \| cpu \| cuda` (value iteration is CPU/numpy; only the reward net uses the device) |
 | `--n_trials`, `--num_workers` | Optuna budget / parallel workers |
 | `--run_id` | reuse a folder id; omitted → auto-increment |
+| `--save-config` | persist the above overrides back into the YAML (default: this run only) |
 
 > **Compute note.** Each trial builds a **dense** transition matrix
 > `P` of shape `(n_states, 12, n_release, n_states)` and runs value iteration, so
@@ -103,7 +104,7 @@ python deepmaxent/results.py --reservoir englebright          # defaults to late
 | `policy_Pi.npy`, `reward_table_R.npy` | softmax policy and reward table over the grid |
 | `s_space.npy`, `r_space.npy`, `i_space.npy` | discretization grids |
 | `metrics.json`, `run_args.json` | val/test SVF + corr + nRMSE + unified score; provenance |
-| `figures/mc_fan_test.png`, `mc_fan_full.png` | **Monte-Carlo rollout fans** (median + 25–75% IQR) of storage and release |
+| `figures/mc_fan_test.png`, `figures/mc_fan_full.png` | **Monte-Carlo rollout fans** (median + 25–75% IQR) of storage and release |
 | `figures/reward_maps.png` | **reward structure**: 12 monthly storage×release reward contours, expert obs overlaid |
 | `figures/shap_reward_overall.png` | **reward-only SHAP**, combined |
 | `figures/shap_reward_monthly.png` | reward-only SHAP per month (sin/cos rows dropped) — only when `use_month_encoding` |

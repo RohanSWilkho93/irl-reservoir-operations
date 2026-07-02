@@ -2,5 +2,7 @@ __pycache__/
 *.py[cod]
 results/
 *.optuna_study.db
+*_journal.log
+*_journal.log.lock
 .ipynb_checkpoints/
 .DS_Store

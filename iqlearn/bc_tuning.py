@@ -50,6 +50,7 @@ if str(_ROOT) not in sys.path:
 
 from utils.data import load_reservoir_data
 from utils.metrics import rmse, safe_pearsonr
+from utils.optuna_dist import build_study, run_optimize, n_completed
 from iqlearn.networks.policy import build_policy_network
 from iqlearn.distributions import detect_family_pair
 from iqlearn.utils.runs import _resolve_device, _writeback_yaml, _resolve_run_id
@@ -242,18 +243,29 @@ def _config_from_best(best, data, device: str, family: str) -> BCConfig:
 
 
 def _tune_one_family(family: str, algo_cfg: dict, data, device: str,
-                     n_trials: int, n_jobs: int, reservoir: str):
-    """Run one family's Optuna study; return (score, BCConfig, model_state_dict)."""
-    print(f"\n  ── Tuning family: {family}  ({n_trials} trials, {n_jobs} job(s)) ──")
-    study = optuna.create_study(
+                     n_trials: int, n_jobs: int, reservoir: str,
+                     *, storage=None, study_name=None, role="full"):
+    """
+    Run one family's Optuna study; return (score, BCConfig, model_state_dict).
+
+    role='worker'   -> contribute trials to the shared study, return (None, None, None).
+    role='finalize' -> skip optimize; rebuild + retrain the best from the completed study.
+    role='full'     -> optimize then retrain the best (default).
+    """
+    print(f"\n  ── Tuning family: {family}  ({n_trials} trials, {n_jobs} job(s), role={role}) ──")
+    study, shared = build_study(
         direction="maximize",
         sampler=optuna.samplers.TPESampler(seed=42),
         pruner=optuna.pruners.MedianPruner(n_warmup_steps=20),
-        study_name=f"{reservoir}_bc_{family}",
+        storage=storage, study_name=(study_name or f"{reservoir}_bc_{family}"),
     )
     optuna.logging.set_verbosity(optuna.logging.WARNING)
-    study.optimize(_make_objective(algo_cfg, data, device, family),
-                   n_trials=n_trials, n_jobs=n_jobs)
+    if role != "finalize":
+        run_optimize(study, _make_objective(algo_cfg, data, device, family),
+                     n_trials=n_trials, n_jobs=n_jobs, shared=shared)
+    if role == "worker":
+        print(f"     {family}: [worker] {n_completed(study)} completed trials (no retrain).")
+        return None, None, None
 
     completed = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
     if not completed:
@@ -299,6 +311,14 @@ def run_bc_tuning(*, reservoir, res_cfg, res_cfg_path, algo_cfg,
               else bc["optuna"]["n_jobs"])
     n_trials = bc["optuna"]["n_trials"]
 
+    # ---- distributed (local shared-journal) options ----
+    storage = getattr(cli_args, "storage", None)
+    role = getattr(cli_args, "role", None) or "full"
+    sname_prefix = getattr(cli_args, "study_name", None)
+    if storage is not None and run_id is None:
+        sys.exit("ERROR: --storage requires an explicit --run_id so every worker + the "
+                 "finalize step target the same run folder.")
+
     # ---- data-driven family selection (enforces the Paper-1 pairing) ----
     sel = bc.get("selection", {}) or {}
     families = detect_family_pair(
@@ -322,10 +342,17 @@ def run_bc_tuning(*, reservoir, res_cfg, res_cfg_path, algo_cfg,
     # ---- tune both candidate families, keep the better ----
     best_score, best_cfg, best_state, best_family = -float("inf"), None, None, None
     for family in families:
+        sname = f"{sname_prefix}_{family}" if sname_prefix else f"{reservoir}_bc_{family}"
         score, cfg, state = _tune_one_family(family, algo_cfg, data, device_str,
-                                             n_trials, n_jobs, reservoir)
+                                             n_trials, n_jobs, reservoir,
+                                             storage=storage, study_name=sname, role=role)
         if state is not None and score > best_score:
             best_score, best_cfg, best_state, best_family = score, cfg, state, family
+
+    if role == "worker":
+        print(f"\n  [worker] BC trials contributed for {families}; exiting (no policy saved).")
+        return {"run_folder": results_dir, "run_id": run_id, "role": "worker",
+                "candidate_families": list(families)}
 
     if best_cfg is None:
         sys.exit("All BC trials failed for every candidate family. Check data + search space.")
@@ -374,12 +401,25 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--num_workers", type=int, default=None)
     p.add_argument("--n_trials", type=int, default=None)
     p.add_argument("--run_id", type=int, default=None)
+    # distributed local-journal tuning (multiple worker processes, any scheduler; no internet)
+    p.add_argument("--storage", default=None,
+                   help="Local JournalFileStorage path for shared-journal distributed tuning. "
+                        "Omit for in-memory. Requires --run_id.")
+    p.add_argument("--study_name", default=None, help="Shared study-name prefix (default: <reservoir>_bc).")
+    p.add_argument("--role", choices=["full", "worker", "finalize"], default="full",
+                   help="worker = add trials only; finalize = pick+retrain+save the winner; "
+                        "full = tune then save (default).")
+    p.add_argument("--save-config", dest="save_config", action="store_true",
+                   help="Persist CLI overrides back into the YAML config files "
+                        "(default: overrides apply to this run only).")
     return p.parse_args()
 
 
-def _apply_cli_overrides(args, res_cfg, algo_cfg, res_cfg_path, algo_cfg_path) -> None:
-    """Apply CLI overrides in-memory and persist (reservoir keys at top level;
-    algorithm keys under the bc_tuning block)."""
+def _apply_cli_overrides(args, res_cfg, algo_cfg, res_cfg_path, algo_cfg_path,
+                         save_config: bool = False) -> None:
+    """Apply CLI overrides in-memory; only persist to the YAML files when
+    `save_config` is True (reservoir keys at top level; algorithm keys under the
+    bc_tuning block).  Default is ephemeral: overrides affect this run only."""
     res_updates, algo_updates = {}, {}
 
     if args.data_path is not None:
@@ -414,10 +454,11 @@ def _apply_cli_overrides(args, res_cfg, algo_cfg, res_cfg_path, algo_cfg_path) -
         algo_cfg["bc_tuning"]["optuna"]["n_trials"] = args.n_trials
         algo_updates.setdefault("bc_tuning", {}).setdefault("optuna", {})["n_trials"] = args.n_trials
 
-    if res_updates:
-        _writeback_yaml(res_cfg_path, res_updates)
-    if algo_updates:
-        _writeback_yaml(algo_cfg_path, algo_updates)
+    if save_config:
+        if res_updates:
+            _writeback_yaml(res_cfg_path, res_updates)
+        if algo_updates:
+            _writeback_yaml(algo_cfg_path, algo_updates)
 
 
 def main():
@@ -429,7 +470,8 @@ def main():
     res_cfg  = yaml.safe_load(open(res_cfg_path))
     algo_cfg = yaml.safe_load(open(algo_cfg_path))
 
-    _apply_cli_overrides(args, res_cfg, algo_cfg, res_cfg_path, algo_cfg_path)
+    _apply_cli_overrides(args, res_cfg, algo_cfg, res_cfg_path, algo_cfg_path,
+                         save_config=args.save_config)
     device_str = _resolve_device(algo_cfg["bc_tuning"]["runtime"]["device"])
 
     print(f"\nLoading data for reservoir '{args.reservoir}' …")

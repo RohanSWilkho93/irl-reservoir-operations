@@ -72,12 +72,13 @@ python airl/results.py --reservoir englebright            # defaults to latest r
 |---|---|
 | `--reservoir` | matches `configs/reservoirs/<name>.yaml` |
 | `--data_path`, `--state_variables`, `--use_month_encoding`, `--split_train/val/test` | feed/override the single data load |
-| `--device` | `auto \| cpu \| cuda \| cuda:N` (both stages) |
+| `--device` | `auto \| cpu \| cuda \| cuda:N \| mps` (both stages) |
 | `--run_id` | reuse a folder id; omitted → BC auto-increments |
 | `--bc_n_trials`, `--bc_n_jobs` | Stage-1 BC Optuna budget (trials are **per family**) |
 | `--airl_n_trials`, `--airl_n_jobs` | Stage-2 adversarial Optuna budget |
 | `--storage_variable`, `--inflow_variable` | which state columns are the physics roles |
 | `--max/min_storage`, `--max/min_release`, `--seconds_per_day`, `--volume_factor` | mass-balance overrides (CLI > config > data) |
+| `--save-config` | persist the above overrides back into the YAML (default: this run only) |
 
 > **Compute note.** AIRL is the heaviest method: each Stage-2 trial does
 > discriminator warm-up + adversarial PPO across **five** networks. Keep
@@ -90,7 +91,7 @@ python airl/results.py --reservoir englebright            # defaults to latest r
 | `bc_policy.pt`, `bc_best_config.json` | Stage-1 winner (policy + family) |
 | `airl_agent.pt` | policy + critic + reward_net + shaping_net + configs |
 | `airl_best_config.json`, `metrics.json`, `*run_args.json` | best params + resolved mass-balance; val/test fidelity; provenance |
-| `figures/mc_fan_full.png`, `mc_fan_test.png` | Monte-Carlo rollout fans (median + IQR) — all data, test split |
+| `figures/mc_fan_full.png`, `figures/mc_fan_test.png` | Monte-Carlo rollout fans (median + IQR) — all data, test split |
 | `figures/reward_contours.png` | recovered reward `g(s,a)` over storage×release, per month, expert overlaid |
 | `figures/shap_reward_overall.png` (+ `_monthly`) | SHAP of the recovered reward |
 | `figures/shap_policy_overall.png` (+ `_monthly`) | SHAP of the policy's expected release |

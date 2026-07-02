@@ -38,6 +38,7 @@ from deepmaxent.mdp import (create_spaces, create_trajectories, build_inflow_tra
                             build_transition_matrix, grid_sizes)
 from deepmaxent.trainer import MaxEntTrainer
 from iqlearn.utils.runs import _resolve_device, _writeback_yaml, _resolve_run_id
+from utils.optuna_dist import build_study, run_optimize, n_completed
 
 
 # =============================================================================
@@ -158,6 +159,14 @@ def run_deepmaxent_tuning(*, reservoir, res_cfg, res_cfg_path, algo_cfg, data,
     tuning_n_mc = int((dm.get("tuning", {}) or {}).get("n_mc_simulations", 30))
     final_n_mc = int((dm.get("tuning", {}) or {}).get("final_n_mc_simulations", 50))
 
+    # ---- distributed (local shared-journal) options ----
+    storage = getattr(cli_args, "storage", None)
+    study_name = getattr(cli_args, "study_name", None) or f"{reservoir}_deepmaxent"
+    role = getattr(cli_args, "role", None) or "full"
+    if storage is not None and run_id is None:
+        sys.exit("ERROR: --storage requires an explicit --run_id so every worker + the "
+                 "finalize step target the same run folder.")
+
     base_dir = _ROOT / "results" / reservoir / "deepmaxent"
     run_id, folder = _resolve_run_id(base_dir, run_id)
     folder.mkdir(parents=True, exist_ok=True)
@@ -167,11 +176,16 @@ def run_deepmaxent_tuning(*, reservoir, res_cfg, res_cfg_path, algo_cfg, data,
     print(f"  grid guard: max_states={max_states}  max_transition_elems={max_p_elems:.1e}   "
           f"trials={n_trials} jobs={n_jobs}")
 
-    study = optuna.create_study(direction="maximize", sampler=optuna.samplers.TPESampler(seed=2048),
-                                study_name=f"{reservoir}_deepmaxent")
+    study, shared = build_study(direction="maximize", sampler=optuna.samplers.TPESampler(seed=2048),
+                                storage=storage, study_name=study_name)
     optuna.logging.set_verbosity(optuna.logging.WARNING)
-    study.optimize(_make_objective(algo_cfg, data, device_str, max_states, max_p_elems, tuning_n_mc),
-                   n_trials=n_trials, n_jobs=n_jobs)
+    if role != "finalize":
+        print(f"  optimize: role={role}  shared={shared}  n_jobs={n_jobs}  n_trials(cap)={n_trials}")
+        run_optimize(study, _make_objective(algo_cfg, data, device_str, max_states, max_p_elems, tuning_n_mc),
+                     n_trials=n_trials, n_jobs=n_jobs, shared=shared)
+    if role == "worker":
+        print(f"  [worker] exiting — {n_completed(study)} completed trials in the shared study (no save).")
+        return {"run_folder": folder, "run_id": run_id, "role": "worker", "n_completed": n_completed(study)}
 
     completed = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
     if not completed:
@@ -236,10 +250,21 @@ def _parse_args():
     p.add_argument("--num_workers", type=int, default=None)
     p.add_argument("--n_trials", type=int, default=None)
     p.add_argument("--run_id", type=int, default=None)
+    # distributed local-journal tuning (multiple worker processes, any scheduler; no internet)
+    p.add_argument("--storage", default=None,
+                   help="Local JournalFileStorage path for shared-journal distributed tuning. "
+                        "Omit for in-memory. Requires --run_id.")
+    p.add_argument("--study_name", default=None, help="Shared study name (default: <reservoir>_deepmaxent).")
+    p.add_argument("--role", choices=["full", "worker", "finalize"], default="full",
+                   help="worker = add trials only; finalize = retrain+save best; full = tune then save.")
+    p.add_argument("--save-config", dest="save_config", action="store_true",
+                   help="Persist CLI overrides back into the YAML config files "
+                        "(default: overrides apply to this run only).")
     return p.parse_args()
 
 
-def _apply_cli_overrides(args, res_cfg, algo_cfg, res_cfg_path, algo_cfg_path) -> None:
+def _apply_cli_overrides(args, res_cfg, algo_cfg, res_cfg_path, algo_cfg_path,
+                         save_config: bool = False) -> None:
     res_u, algo_u = {}, {}
     if args.data_path is not None:
         res_cfg["data_path"] = args.data_path; res_u["data_path"] = args.data_path
@@ -256,8 +281,9 @@ def _apply_cli_overrides(args, res_cfg, algo_cfg, res_cfg_path, algo_cfg_path) -
     if args.n_trials is not None:
         algo_cfg["deepmaxent"]["optuna"]["n_trials"] = args.n_trials
         algo_u.setdefault("deepmaxent", {}).setdefault("optuna", {})["n_trials"] = args.n_trials
-    if res_u: _writeback_yaml(res_cfg_path, res_u)
-    if algo_u: _writeback_yaml(algo_cfg_path, algo_u)
+    if save_config:
+        if res_u: _writeback_yaml(res_cfg_path, res_u)
+        if algo_u: _writeback_yaml(algo_cfg_path, algo_u)
 
 
 def main():
@@ -266,7 +292,8 @@ def main():
     algo_cfg_path = _ROOT / "configs" / "algorithms" / "deepmaxent.yaml"
     if not res_cfg_path.exists(): sys.exit(f"Reservoir config not found: {res_cfg_path}")
     res_cfg = yaml.safe_load(open(res_cfg_path)); algo_cfg = yaml.safe_load(open(algo_cfg_path))
-    _apply_cli_overrides(args, res_cfg, algo_cfg, res_cfg_path, algo_cfg_path)
+    _apply_cli_overrides(args, res_cfg, algo_cfg, res_cfg_path, algo_cfg_path,
+                         save_config=getattr(args, "save_config", False))
     device_str = _resolve_device(algo_cfg["deepmaxent"]["runtime"]["device"])
     print(f"\nLoading data for '{args.reservoir}' …")
     data = load_raw_reservoir_data(res_cfg, res_cfg_path)

@@ -182,6 +182,7 @@ python iqlearn/run.py \
 | `--bc_n_trials/-_n_jobs`, `--iq_n_trials/-_n_jobs` | per-stage Optuna budgets (BC trials are **per family**) |
 | `--storage_variable`, `--inflow_variable` | which state columns are the physics roles |
 | `--max/min_storage`, `--max/min_release`, `--seconds_per_day`, `--volume_factor` | IQ-only mass-balance overrides |
+| `--save-config` | persist the above overrides back into the YAML (default: this run only) |
 
 Figure generation is defensive: if it fails (e.g. `shap`/`matplotlib` missing) the trained
 agent is still saved and `run.py` prints the standalone command to retry.
@@ -212,8 +213,8 @@ Knobs: `--run_id`, `--device`, `--n_mc`, `--grid_size`, `--contour_max_inflows`,
 | `iq_agent.pt`, `iq_best_config.json` | IQ | final agent + resolved mass-balance + seed |
 | `run_args.json`, `iq_run_args.json` | both | provenance (candidate + winning family) |
 | `figures/reward_contours.png` | results | learned `min(Q₁,Q₂)` reward landscape, observations overlaid (per-month if month encoding) |
-| `figures/mc_fan_test.png`, `mc_fan_full.png` | results | Monte-Carlo rollout fans (median + 25–75% IQR) vs observed |
-| `figures/shap_policy_*.png`, `shap_critic_*.png` | results | SHAP feature importance (overall + monthly) |
+| `figures/mc_fan_test.png`, `figures/mc_fan_full.png` | results | Monte-Carlo rollout fans (median + 25–75% IQR) vs observed |
+| `figures/shap_policy_*.png`, `figures/shap_critic_*.png` | results | SHAP feature importance (overall + monthly) |
 
 ---
 

@@ -48,6 +48,9 @@ def _parse_args():
     p.add_argument("--num_workers", type=int, default=None, help="parallel Optuna workers")
     p.add_argument("--n_trials", type=int, default=None)
     p.add_argument("--run_id", type=int, default=None)
+    p.add_argument("--save-config", dest="save_config", action="store_true",
+                   help="Persist CLI overrides back into the YAML config files "
+                        "(default: overrides apply to this run only).")
     return p.parse_args()
 
 
@@ -62,7 +65,8 @@ def main():
     res_cfg = yaml.safe_load(open(res_cfg_path))
     algo_cfg = yaml.safe_load(open(algo_cfg_path))
 
-    _apply_cli_overrides(a, res_cfg, algo_cfg, res_cfg_path, algo_cfg_path)
+    _apply_cli_overrides(a, res_cfg, algo_cfg, res_cfg_path, algo_cfg_path,
+                         save_config=a.save_config)
     device_str = _resolve_device(a.device if a.device is not None
                                  else algo_cfg["deepmaxent"]["runtime"]["device"])
 

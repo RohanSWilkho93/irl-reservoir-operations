@@ -53,7 +53,7 @@ airl_tuning:
     num_workers: 4
 
   optuna:
-    n_trials: 100                       # AIRL trials are heavy (BC warm-start + adversarial PPO, 5 networks)
+    n_trials: 2000                      # AIRL trials are heavy (BC warm-start + adversarial PPO, 5 networks)
     n_jobs: 4
 
   # Actor architecture + distribution family are INHERITED from bc_policy.pt.
